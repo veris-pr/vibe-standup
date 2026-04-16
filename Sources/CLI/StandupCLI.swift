@@ -383,51 +383,124 @@ struct StartCommand: AsyncParsableCommand {
     func run() async throws {
         let (config, _, sessionService, pipelineService) = try buildServices()
 
+        // Verify init has been run
+        let configPath = (config.baseDirectory as NSString).appendingPathComponent("config.yaml")
+        if !FileManager.default.fileExists(atPath: configPath) {
+            print("✗ Standup not initialized. Run `standup init` first.")
+            Foundation.exit(1)
+        }
+
         let pipelinePath = (config.pipelinesDirectory as NSString).appendingPathComponent("\(pipeline).yaml")
         let definition: PipelineDefinition
         if FileManager.default.fileExists(atPath: pipelinePath) {
             definition = try PipelineService.load(from: pipelinePath)
-        } else {
+            print("● Pipeline: \(definition.name) — \(definition.description)")
+        } else if pipeline == "default" {
             definition = .captureOnly(name: pipeline)
-        }
-
-        let chains = try await pipelineService.buildLiveChains(from: definition)
-        let session = try await sessionService.startSession(
-            pipelineName: pipeline,
-            micChain: chains.mic,
-            systemChain: chains.system
-        )
-
-        print("● Session \(session.id) started")
-        print("● Pipeline: \(pipeline)")
-        print("● Capturing: mic + system audio")
-        print("● Press Ctrl+C or run `standup stop` to end")
-
-        try session.id.write(toFile: config.activeSessionFile, atomically: true, encoding: .utf8)
-
-        let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        signal(SIGINT, SIG_IGN)
-        sigSource.setEventHandler {
-            sigSource.cancel()
-            Task {
-                let stopped = try await sessionService.stopSession()
-                print("\n■ Session \(stopped.id) stopped")
-
-                if !definition.stages.isEmpty {
-                    print("⚙ Running pipeline: \(pipeline)")
-                    try await pipelineService.executeStages(definition: definition, session: stopped)
-                    try sessionService.markComplete(sessionId: stopped.id)
-                    print("✓ Pipeline complete")
-                } else {
-                    try sessionService.markComplete(sessionId: stopped.id)
-                }
-
-                try? FileManager.default.removeItem(atPath: config.activeSessionFile)
-                Foundation.exit(0)
+            print("● Pipeline: capture-only (no post-processing)")
+        } else {
+            print("✗ Pipeline not found: \(pipelinePath)")
+            print("  Available pipelines:")
+            let fm = FileManager.default
+            if let files = try? fm.contentsOfDirectory(atPath: config.pipelinesDirectory).filter({ $0.hasSuffix(".yaml") }) {
+                for f in files.sorted() { print("    - \(f.replacingOccurrences(of: ".yaml", with: ""))") }
             }
+            Foundation.exit(1)
         }
-        sigSource.resume()
-        dispatchMain()
+
+        print("● Starting audio capture...")
+
+        do {
+            let chains = try await pipelineService.buildLiveChains(from: definition)
+            let liveCount = chains.mic.pluginCount + chains.system.pluginCount
+            if liveCount > 0 {
+                print("● Live plugins: \(chains.mic.pluginCount) mic, \(chains.system.pluginCount) system")
+            }
+
+            let session = try await sessionService.startSession(
+                pipelineName: pipeline,
+                micChain: chains.mic,
+                systemChain: chains.system
+            )
+
+            print("● Session \(session.id) started")
+            print("● Directory: \(session.directoryPath)")
+            print("● Capturing: mic + system audio")
+            if !definition.stages.isEmpty {
+                print("● On stop: will run \(definition.stages.count) pipeline stages")
+            }
+            print("● Press Ctrl+C or run `standup stop` to end")
+            print()
+
+            try session.id.write(toFile: config.activeSessionFile, atomically: true, encoding: .utf8)
+
+            let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+            signal(SIGINT, SIG_IGN)
+            sigSource.setEventHandler {
+                sigSource.cancel()
+                Task {
+                    do {
+                        let stopped = try await sessionService.stopSession()
+                        print("\n■ Session \(stopped.id) stopped")
+
+                        // Count chunks
+                        let chunksDir = stopped.chunksPath
+                        let chunkCount = (try? FileManager.default.contentsOfDirectory(atPath: chunksDir).filter { $0.hasSuffix(".pcm") }.count) ?? 0
+                        print("■ Captured \(chunkCount) audio chunks")
+
+                        if !definition.stages.isEmpty {
+                            print("\n⚙ Running pipeline: \(pipeline)")
+                            for (i, stage) in definition.stages.enumerated() {
+                                print("  [\(i+1)/\(definition.stages.count)] \(stage.id) (\(stage.pluginId))...")
+                            }
+                            print()
+
+                            try await pipelineService.executeStages(definition: definition, session: stopped)
+                            try sessionService.markComplete(sessionId: stopped.id)
+
+                            print("✓ Pipeline complete!")
+                            print("✓ Results in: \(stopped.directoryPath)")
+
+                            // Show output artifacts
+                            let fm = FileManager.default
+                            if let dirs = try? fm.contentsOfDirectory(atPath: stopped.directoryPath).sorted() {
+                                for dir in dirs {
+                                    let dirPath = (stopped.directoryPath as NSString).appendingPathComponent(dir)
+                                    var isDir: ObjCBool = false
+                                    if fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue, dir != "chunks" {
+                                        let files = (try? fm.contentsOfDirectory(atPath: dirPath)) ?? []
+                                        for file in files.sorted() {
+                                            print("  └─ \(dir)/\(file)")
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            try sessionService.markComplete(sessionId: stopped.id)
+                            print("✓ Session complete. Audio in: \(stopped.chunksPath)")
+                        }
+                    } catch {
+                        print("\n✗ Error during pipeline: \(error.localizedDescription)")
+                        try? sessionService.markFailed(sessionId: config.activeSessionFile)
+                    }
+
+                    try? FileManager.default.removeItem(atPath: config.activeSessionFile)
+                    Foundation.exit(0)
+                }
+            }
+            sigSource.resume()
+            dispatchMain()
+        } catch {
+            if error.localizedDescription.contains("permission") || error.localizedDescription.contains("denied") || error.localizedDescription.contains("Screen") {
+                print("\n✗ Permission error: \(error.localizedDescription)")
+                print("  Fix: System Settings → Privacy & Security")
+                print("  → Enable Microphone for this terminal/app")
+                print("  → Enable Screen Recording for this terminal/app")
+            } else {
+                print("\n✗ Failed to start: \(error.localizedDescription)")
+            }
+            Foundation.exit(1)
+        }
     }
 }
 

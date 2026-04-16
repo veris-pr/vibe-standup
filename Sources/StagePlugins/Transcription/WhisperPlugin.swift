@@ -168,7 +168,9 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
     // MARK: - Find binaries
 
     private func findWhisperBinary() -> String? {
-        ["/opt/homebrew/bin/whisper-cpp", "/usr/local/bin/whisper-cpp", "/opt/homebrew/bin/main"]
+        ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli",
+         "/opt/homebrew/bin/whisper-cpp", "/usr/local/bin/whisper-cpp",
+         "/opt/homebrew/bin/main"]
             .first { FileManager.default.fileExists(atPath: $0) }
     }
 
