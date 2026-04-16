@@ -502,7 +502,7 @@ struct StartCommand: AsyncParsableCommand {
             let pidFile = config.activeSessionFile + ".pid"
             try "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: pidFile, atomically: true, encoding: .utf8)
 
-            let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+            let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
             signal(SIGINT, SIG_IGN)
             sigSource.setEventHandler {
                 sigSource.cancel()
@@ -562,7 +562,11 @@ struct StartCommand: AsyncParsableCommand {
                 }
             }
             sigSource.resume()
-            dispatchMain()
+
+            // Suspend this async task forever — the SIGINT handler calls exit(0).
+            // Using withCheckedContinuation avoids blocking the cooperative thread pool
+            // (dispatchMain() would SIGTRAP by hijacking a cooperative thread).
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
         } catch {
             if let captureError = error as? AudioCaptureError {
                 switch captureError {
