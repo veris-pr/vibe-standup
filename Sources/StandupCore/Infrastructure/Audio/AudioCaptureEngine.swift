@@ -128,11 +128,19 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
 
 private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
     // SAFETY: @unchecked Sendable — handler closure captures only Sendable references.
+    // scratchBuffer is accessed only from the SCStreamOutput callback queue (serial).
     let handler: (UnsafeMutablePointer<Float>, Int) -> Void
+    private var scratchBuffer: UnsafeMutablePointer<Float>
+    private var scratchCapacity: Int
 
     init(handler: @escaping (UnsafeMutablePointer<Float>, Int) -> Void) {
         self.handler = handler
+        let initial = 4096
+        self.scratchBuffer = .allocate(capacity: initial)
+        self.scratchCapacity = initial
     }
+
+    deinit { scratchBuffer.deallocate() }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
@@ -159,12 +167,16 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchec
         let frameCount = totalSamples / channelCount
         guard frameCount > 0 else { return }
 
-        ptr.withMemoryRebound(to: Float.self, capacity: totalSamples) { floatPtr in
-            let mutable = UnsafeMutablePointer<Float>.allocate(capacity: frameCount)
-            defer { mutable.deallocate() }
+        // Grow scratch buffer if needed (rare — only on first large callback)
+        if frameCount > scratchCapacity {
+            scratchBuffer.deallocate()
+            scratchBuffer = .allocate(capacity: frameCount)
+            scratchCapacity = frameCount
+        }
 
+        ptr.withMemoryRebound(to: Float.self, capacity: totalSamples) { floatPtr in
             if channelCount == 1 {
-                mutable.update(from: floatPtr, count: frameCount)
+                scratchBuffer.update(from: floatPtr, count: frameCount)
             } else {
                 // Downmix to mono by averaging channels
                 for i in 0..<frameCount {
@@ -172,10 +184,10 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchec
                     for ch in 0..<channelCount {
                         sum += floatPtr[i * channelCount + ch]
                     }
-                    mutable[i] = sum / Float(channelCount)
+                    scratchBuffer[i] = sum / Float(channelCount)
                 }
             }
-            handler(mutable, frameCount)
+            handler(scratchBuffer, frameCount)
         }
     }
 }

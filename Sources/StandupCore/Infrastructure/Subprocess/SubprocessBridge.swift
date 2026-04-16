@@ -41,34 +41,40 @@ public final class SubprocessStagePlugin: BaseStagePlugin, @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let inputData = try encoder.encode(inputMessage)
+        let execPath = executablePath
+        let args = arguments
+        let pluginId = id
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
+        // Run blocking Process on a non-cooperative thread
+        let (terminationStatus, stdoutData, stderrData) = try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: execPath)
+            process.arguments = args
 
-        let stdinPipe = Pipe()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardInput = stdinPipe
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+            let stdinPipe = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardInput = stdinPipe
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
 
-        try process.run()
+            try process.run()
 
-        stdinPipe.fileHandleForWriting.write(inputData)
-        stdinPipe.fileHandleForWriting.write(Data("\n".utf8))
-        stdinPipe.fileHandleForWriting.closeFile()
+            stdinPipe.fileHandleForWriting.write(inputData)
+            stdinPipe.fileHandleForWriting.write(Data("\n".utf8))
+            stdinPipe.fileHandleForWriting.closeFile()
 
-        // Read pipes BEFORE waitUntilExit to prevent deadlock when
-        // subprocess output exceeds the OS pipe buffer (~64KB).
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
-        process.waitUntilExit()
+            process.waitUntilExit()
 
-        guard process.terminationStatus == 0 else {
+            return (process.terminationStatus, stdoutData, stderrData)
+        }.value
+
+        guard terminationStatus == 0 else {
             let errorMsg = String(data: stderrData, encoding: .utf8) ?? "unknown error"
-            throw SubprocessError.nonZeroExit(id, Int(process.terminationStatus), errorMsg)
+            throw SubprocessError.nonZeroExit(pluginId, Int(terminationStatus), errorMsg)
         }
 
         let decoder = JSONDecoder()
@@ -77,7 +83,7 @@ public final class SubprocessStagePlugin: BaseStagePlugin, @unchecked Sendable {
 
         return output.artifacts.map { art in
             Artifact(
-                stageId: id,
+                stageId: pluginId,
                 type: ArtifactType(rawValue: art.type) ?? .custom,
                 path: art.path
             )

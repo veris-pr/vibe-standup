@@ -61,7 +61,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         let fm = FileManager.default
         if !whisperPath.isEmpty && fm.fileExists(atPath: whisperPath)
             && !modelPath.isEmpty && fm.fileExists(atPath: modelPath) {
-            segments = try runWhisperCpp(wavPath: mergedWAV, outputDir: outputDir)
+            segments = try await runWhisperCpp(wavPath: mergedWAV, outputDir: outputDir)
         } else {
             // Fallback: detect audio duration and emit placeholder
             segments = try createPlaceholderSegments(wavPath: mergedWAV)
@@ -126,7 +126,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
             } else if let data = micData ?? sysData {
                 // Single channel: apply same 0.5 gain as mixed path for consistent volume
                 let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-                var scaled = samples.map { $0 * 0.5 }
+                let scaled = samples.map { $0 * 0.5 }
                 allSamples.append(scaled.withUnsafeBufferPointer { Data(buffer: $0) })
             }
         }
@@ -159,29 +159,39 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - whisper.cpp CLI
 
-    private func runWhisperCpp(wavPath: String, outputDir: String) throws -> [WhisperSegmentOutput] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: whisperPath)
-        process.arguments = [
-            "-m", modelPath,
-            "-f", wavPath,
-            "-l", language,
-            "-t", "\(threads)",
-            "-oj",
-            "-of", (outputDir as NSString).appendingPathComponent("whisper_out"),
-            "--no-prints"
-        ]
-        let stderrPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderrPipe
+    private func runWhisperCpp(wavPath: String, outputDir: String) async throws -> [WhisperSegmentOutput] {
+        let whisperPath = self.whisperPath
+        let modelPath = self.modelPath
+        let language = self.language
+        let threads = self.threads
 
-        try process.run()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Run blocking Process on a non-cooperative thread to avoid blocking the async pool
+        let (terminationStatus, stderrData) = try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: whisperPath)
+            process.arguments = [
+                "-m", modelPath,
+                "-f", wavPath,
+                "-l", language,
+                "-t", "\(threads)",
+                "-oj",
+                "-of", (outputDir as NSString).appendingPathComponent("whisper_out"),
+                "--no-prints"
+            ]
+            let stderrPipe = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = stderrPipe
 
-        guard process.terminationStatus == 0 else {
+            try process.run()
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+
+            return (process.terminationStatus, stderrData)
+        }.value
+
+        guard terminationStatus == 0 else {
             let errorMsg = String(data: stderrData, encoding: .utf8) ?? "unknown error"
-            throw WhisperError.transcriptionFailed("whisper-cpp exited with code \(process.terminationStatus): \(errorMsg)")
+            throw WhisperError.transcriptionFailed("whisper-cpp exited with code \(terminationStatus): \(errorMsg)")
         }
 
         let jsonPath = (outputDir as NSString).appendingPathComponent("whisper_out.json")
