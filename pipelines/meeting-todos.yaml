@@ -4,6 +4,11 @@
 name: meeting-todos
 description: Extract action items and reminders from meetings
 
+# Audio capture source (optional — can be overridden with --capture CLI flag)
+# capture:
+#   source: screen-capture
+#   virtual_device: "BlackHole 2ch"
+
 live:
   mic:
     - plugin: noise-gate

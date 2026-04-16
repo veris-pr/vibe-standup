@@ -272,12 +272,18 @@ public enum AudioCaptureError: Error, LocalizedError, Sendable {
     case noDisplayFound
     case micPermissionDenied
     case screenCapturePermissionDenied
+    case virtualDeviceNotFound(String)
+    case virtualDeviceConfigFailed(String, OSStatus)
 
     public var errorDescription: String? {
         switch self {
         case .noDisplayFound: "No display found for system audio capture"
         case .micPermissionDenied: "Microphone permission denied"
         case .screenCapturePermissionDenied: "Screen capture permission denied"
+        case .virtualDeviceNotFound(let name):
+            "Virtual audio device '\(name)' not found. Install it with: brew install blackhole-2ch"
+        case .virtualDeviceConfigFailed(let name, let status):
+            "Failed to configure virtual device '\(name)' (OSStatus: \(status))"
         }
     }
 }

@@ -4,6 +4,12 @@
 name: standup-comics
 description: Generate comics from standup meetings
 
+# Audio capture source (optional — can be overridden with --capture CLI flag)
+# Options: screen-capture (default), virtual-device
+# capture:
+#   source: screen-capture
+#   virtual_device: "BlackHole 2ch"  # only used when source is virtual-device
+
 # Live plugins: audio filter chains active during capture
 live:
   mic:

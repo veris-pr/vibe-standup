@@ -19,7 +19,9 @@ public final class SessionService: @unchecked Sendable {
     public func startSession(
         pipelineName: String,
         micChain: LivePluginChain,
-        systemChain: LivePluginChain
+        systemChain: LivePluginChain,
+        captureSource: AudioCaptureSource = .screenCapture,
+        virtualDeviceName: String? = nil
     ) async throws -> Session {
         guard activeSession == nil else {
             throw SessionError.alreadyActive
@@ -32,14 +34,17 @@ public final class SessionService: @unchecked Sendable {
         let session = Session(
             id: String(id),
             pipelineName: pipelineName,
+            captureSource: captureSource,
             directoryPath: sessionDir
         )
         try repository.save(session)
 
-        let engine = AudioCaptureEngine(
+        let engine = AudioCaptureFactory.create(
+            source: captureSource,
             sessionDirectory: sessionDir,
             micChain: micChain,
-            systemChain: systemChain
+            systemChain: systemChain,
+            virtualDeviceName: virtualDeviceName
         )
         try await engine.start()
 

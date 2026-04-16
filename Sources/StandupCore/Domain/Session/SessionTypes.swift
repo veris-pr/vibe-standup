@@ -21,14 +21,16 @@ public struct Session: Sendable, Codable, Equatable {
     public let id: String
     public var status: SessionStatus
     public let pipelineName: String
+    public let captureSource: AudioCaptureSource
     public let startTime: Date
     public var endTime: Date?
     public let directoryPath: String
 
-    public init(id: String, status: SessionStatus = .active, pipelineName: String, startTime: Date = Date(), endTime: Date? = nil, directoryPath: String) {
+    public init(id: String, status: SessionStatus = .active, pipelineName: String, captureSource: AudioCaptureSource = .screenCapture, startTime: Date = Date(), endTime: Date? = nil, directoryPath: String) {
         self.id = id
         self.status = status
         self.pipelineName = pipelineName
+        self.captureSource = captureSource
         self.startTime = startTime
         self.endTime = endTime
         self.directoryPath = directoryPath

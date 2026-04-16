@@ -91,6 +91,18 @@ public final class PipelineService: @unchecked Sendable {
         let name = doc["name"] as? String ?? "unnamed"
         let description = doc["description"] as? String ?? ""
 
+        // Parse capture source configuration
+        var captureSource: AudioCaptureSource? = nil
+        var virtualDeviceName: String? = nil
+        if let capture = doc["capture"] as? [String: Any] {
+            if let sourceStr = capture["source"] as? String {
+                captureSource = AudioCaptureSource(rawValue: sourceStr)
+            }
+            virtualDeviceName = capture["virtual_device"] as? String
+        } else if let sourceStr = doc["capture_source"] as? String {
+            captureSource = AudioCaptureSource(rawValue: sourceStr)
+        }
+
         var micRefs: [PluginRef] = []
         var sysRefs: [PluginRef] = []
         if let live = doc["live"] as? [String: Any] {
@@ -117,6 +129,8 @@ public final class PipelineService: @unchecked Sendable {
         return PipelineDefinition(
             name: name,
             description: description,
+            captureSource: captureSource,
+            virtualDeviceName: virtualDeviceName,
             liveChains: LiveChainConfig(mic: micRefs, system: sysRefs),
             stages: stages
         )

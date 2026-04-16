@@ -10,12 +10,16 @@ import Foundation
 public struct PipelineDefinition: Sendable, Equatable {
     public let name: String
     public let description: String
+    public let captureSource: AudioCaptureSource?
+    public let virtualDeviceName: String?
     public let liveChains: LiveChainConfig
     public let stages: [StageDefinition]
 
-    public init(name: String, description: String = "", liveChains: LiveChainConfig = LiveChainConfig(), stages: [StageDefinition] = []) {
+    public init(name: String, description: String = "", captureSource: AudioCaptureSource? = nil, virtualDeviceName: String? = nil, liveChains: LiveChainConfig = LiveChainConfig(), stages: [StageDefinition] = []) {
         self.name = name
         self.description = description
+        self.captureSource = captureSource
+        self.virtualDeviceName = virtualDeviceName
         self.liveChains = liveChains
         self.stages = stages
     }

@@ -75,10 +75,40 @@ public struct CodableAudioFormat: Sendable, Codable, Equatable {
     }
 }
 
+// MARK: - Audio Capture Source (Strategy Selection)
+
+/// Identifies which audio capture strategy to use for a session.
+///
+/// - `screenCapture`: Uses ScreenCaptureKit for system audio + AVAudioEngine for mic.
+///   Zero setup, captures ALL system audio. Requires Screen Recording permission.
+///   User starts/stops sessions manually. (Same approach as Granola.)
+///
+/// - `virtualDevice`: Uses a virtual audio device (e.g., BlackHole) for system audio
+///   + AVAudioEngine for mic. User sets meeting app output to the virtual device once,
+///   then capture is automatic. More targeted per-app audio, but requires device setup.
+public enum AudioCaptureSource: String, Sendable, Codable, CaseIterable {
+    case screenCapture = "screen-capture"
+    case virtualDevice = "virtual-device"
+
+    public var displayName: String {
+        switch self {
+        case .screenCapture: "System Audio (ScreenCaptureKit)"
+        case .virtualDevice: "Virtual Audio Device"
+        }
+    }
+
+    public var shortHelp: String {
+        switch self {
+        case .screenCapture: "Captures all system audio — no setup required"
+        case .virtualDevice: "Captures from a virtual device (e.g., BlackHole) — per-app routing"
+        }
+    }
+}
+
 // MARK: - Audio Capture Port (contract)
 
 /// Port defining the contract for audio capture implementations.
-/// Infrastructure provides the adapter (e.g., AVAudioEngine + ScreenCaptureKit).
+/// Infrastructure provides adapters for each AudioCaptureSource strategy.
 public protocol AudioCapturePort: AnyObject, Sendable {
     var delegate: AudioCaptureDelegate? { get set }
     func start() async throws

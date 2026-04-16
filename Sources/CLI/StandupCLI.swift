@@ -99,7 +99,11 @@ struct InitCommand: AsyncParsableCommand {
         printStep("Checking macOS permissions")
         checkPermissions(&checks)
 
-        // 8. Validate plugin registry
+        // 8. Virtual audio device check
+        printStep("Checking virtual audio devices")
+        checkVirtualDevices(&checks)
+
+        // 9. Validate plugin registry
         printStep("Validating plugin registry")
         let registry = buildRegistry()
         printOK("Live plugins: \(registry.allLivePluginIds.joined(separator: ", "))")
@@ -289,10 +293,22 @@ struct InitCommand: AsyncParsableCommand {
     private func checkPermissions(_ checks: inout CheckResults) {
         // We can't directly check these, but we can tell the user what to expect
         printWarn("Microphone access — macOS will prompt on first capture session")
-        printWarn("Screen Recording access — required for system audio capture")
+        printWarn("Screen Recording access — required for system audio capture (screen-capture mode)")
         print("  → System Settings > Privacy & Security > Screen Recording > enable 'standup'")
         print("  → System Settings > Privacy & Security > Microphone > enable 'standup'")
         checks.warnings.append("Grant Microphone + Screen Recording permissions on first run")
+    }
+
+    private func checkVirtualDevices(_ checks: inout CheckResults) {
+        let devices = VirtualDeviceCaptureEngine.availableVirtualDevices()
+        if devices.isEmpty {
+            printWarn("No virtual audio devices found (optional)")
+            print("  → To use --capture virtual-device, install: brew install blackhole-2ch")
+            print("  → Then set your meeting app's audio output to 'BlackHole 2ch'")
+        } else {
+            for d in devices { printOK("Found: \(d)") }
+            print("  → Use: standup start --capture virtual-device --virtual-device \"\(devices[0])\"")
+        }
     }
 
     // MARK: - Helpers
@@ -380,7 +396,29 @@ struct StartCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Pipeline to use (YAML file name without extension)")
     var pipeline: String = "default"
 
+    @Option(name: .long, help: "Audio capture source: screen-capture (default) or virtual-device")
+    var capture: String?
+
+    @Option(name: .long, help: "Virtual audio device name (default: 'BlackHole 2ch')")
+    var virtualDevice: String?
+
+    @Flag(name: .long, help: "List available virtual audio devices and exit")
+    var listDevices: Bool = false
+
     func run() async throws {
+        // Handle --list-devices
+        if listDevices {
+            let devices = VirtualDeviceCaptureEngine.availableVirtualDevices()
+            if devices.isEmpty {
+                print("No virtual audio devices found.")
+                print("Install one with: brew install blackhole-2ch")
+            } else {
+                print("Available virtual audio devices:")
+                for d in devices { print("  • \(d)") }
+            }
+            return
+        }
+
         let (config, _, sessionService, pipelineService) = try buildServices()
 
         // Verify init has been run
@@ -410,6 +448,23 @@ struct StartCommand: AsyncParsableCommand {
 
         print("● Starting audio capture...")
 
+        // Resolve capture source: CLI flag > pipeline YAML > default
+        let captureSource: AudioCaptureSource
+        if let captureFlag = capture {
+            guard let source = AudioCaptureSource(rawValue: captureFlag) else {
+                print("✗ Unknown capture source: '\(captureFlag)'")
+                print("  Available: \(AudioCaptureSource.allCases.map(\.rawValue).joined(separator: ", "))")
+                Foundation.exit(1)
+            }
+            captureSource = source
+        } else if let pipelineSource = definition.captureSource {
+            captureSource = pipelineSource
+        } else {
+            captureSource = .screenCapture
+        }
+
+        let deviceName = virtualDevice ?? definition.virtualDeviceName
+
         do {
             let chains = try await pipelineService.buildLiveChains(from: definition)
             let liveCount = chains.mic.pluginCount + chains.system.pluginCount
@@ -417,15 +472,22 @@ struct StartCommand: AsyncParsableCommand {
                 print("● Live plugins: \(chains.mic.pluginCount) mic, \(chains.system.pluginCount) system")
             }
 
+            print("● Capture source: \(captureSource.displayName)")
+            if captureSource == .virtualDevice {
+                print("● Virtual device: \(deviceName ?? "BlackHole 2ch")")
+            }
+
             let session = try await sessionService.startSession(
                 pipelineName: pipeline,
                 micChain: chains.mic,
-                systemChain: chains.system
+                systemChain: chains.system,
+                captureSource: captureSource,
+                virtualDeviceName: deviceName
             )
 
             print("● Session \(session.id) started")
             print("● Directory: \(session.directoryPath)")
-            print("● Capturing: mic + system audio")
+            print("● Capturing: mic + \(captureSource == .virtualDevice ? "virtual device" : "system") audio")
             if !definition.stages.isEmpty {
                 print("● On stop: will run \(definition.stages.count) pipeline stages")
             }
@@ -491,7 +553,23 @@ struct StartCommand: AsyncParsableCommand {
             sigSource.resume()
             dispatchMain()
         } catch {
-            if error.localizedDescription.contains("permission") || error.localizedDescription.contains("denied") || error.localizedDescription.contains("Screen") {
+            if let captureError = error as? AudioCaptureError {
+                switch captureError {
+                case .virtualDeviceNotFound(let name):
+                    print("\n✗ Virtual audio device '\(name)' not found.")
+                    print("  Install: brew install blackhole-2ch")
+                    let available = VirtualDeviceCaptureEngine.availableVirtualDevices()
+                    if !available.isEmpty {
+                        print("  Available devices: \(available.joined(separator: ", "))")
+                    }
+                    print("  Or use --capture screen-capture to use system audio instead")
+                case .virtualDeviceConfigFailed(let name, _):
+                    print("\n✗ Failed to configure virtual device '\(name)'")
+                    print("  Try: --capture screen-capture")
+                default:
+                    print("\n✗ Audio error: \(captureError.localizedDescription)")
+                }
+            } else if error.localizedDescription.contains("permission") || error.localizedDescription.contains("denied") || error.localizedDescription.contains("Screen") {
                 print("\n✗ Permission error: \(error.localizedDescription)")
                 print("  Fix: System Settings → Privacy & Security")
                 print("  → Enable Microphone for this terminal/app")
@@ -564,6 +642,7 @@ struct ShowCommand: AsyncParsableCommand {
 
         print("Session:   \(session.id)")
         print("Pipeline:  \(session.pipelineName)")
+        print("Capture:   \(session.captureSource.displayName)")
         print("Status:    \(session.status.rawValue)")
         print("Started:   \(session.startTime)")
         if let end = session.endTime {
