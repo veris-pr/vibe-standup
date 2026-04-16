@@ -4,6 +4,8 @@ import Foundation
 import SQLite
 
 public final class SQLiteSessionRepository: SessionRepository, @unchecked Sendable {
+    // SAFETY: @unchecked Sendable — SQLite Connection is thread-safe when used
+    // with serialized threading mode (default). All access through single Connection instance.
     private let db: Connection
 
     private let sessions = Table("sessions")

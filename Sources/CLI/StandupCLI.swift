@@ -150,7 +150,7 @@ struct InitCommand: AsyncParsableCommand {
             config.pipelinesDirectory,
             config.sessionsDirectory,
             (config.baseDirectory as NSString).appendingPathComponent("models"),
-        ] + config.pluginSearchPaths
+        ]
 
         for dir in dirs {
             if dryRun {
@@ -673,7 +673,7 @@ struct SetupCommand: AsyncParsableCommand {
     func run() async throws {
         let config = StandupConfig.load()
 
-        for dir in [config.baseDirectory, config.pipelinesDirectory, config.sessionsDirectory] + config.pluginSearchPaths {
+        for dir in [config.baseDirectory, config.pipelinesDirectory, config.sessionsDirectory] {
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             print("✓ Created \(dir)")
         }

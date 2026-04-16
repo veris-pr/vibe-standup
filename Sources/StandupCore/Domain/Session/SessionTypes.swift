@@ -16,14 +16,13 @@ public enum SessionStatus: String, Sendable, Codable {
 }
 
 /// A capture session — the aggregate root of the Session domain.
-/// Immutable snapshot; mutations happen through the repository.
 public struct Session: Sendable, Codable, Equatable {
     public let id: String
-    public var status: SessionStatus
+    public private(set) var status: SessionStatus
     public let pipelineName: String
     public let captureSource: AudioCaptureSource
     public let startTime: Date
-    public var endTime: Date?
+    public private(set) var endTime: Date?
     public let directoryPath: String
 
     public init(id: String, status: SessionStatus = .active, pipelineName: String, captureSource: AudioCaptureSource = .screenCapture, startTime: Date = Date(), endTime: Date? = nil, directoryPath: String) {
@@ -34,6 +33,31 @@ public struct Session: Sendable, Codable, Equatable {
         self.startTime = startTime
         self.endTime = endTime
         self.directoryPath = directoryPath
+    }
+
+    /// Transition to processing state (session stopped, pipeline running).
+    public mutating func markProcessing() throws {
+        guard status == .active else {
+            throw SessionError.invalidTransition(from: status, to: .processing)
+        }
+        status = .processing
+        endTime = Date()
+    }
+
+    /// Transition to complete state (pipeline finished successfully).
+    public mutating func markComplete() throws {
+        guard status == .processing else {
+            throw SessionError.invalidTransition(from: status, to: .complete)
+        }
+        status = .complete
+    }
+
+    /// Transition to failed state (pipeline encountered an error).
+    public mutating func markFailed() throws {
+        guard status == .active || status == .processing else {
+            throw SessionError.invalidTransition(from: status, to: .failed)
+        }
+        status = .failed
     }
 
     /// Path to the audio chunks directory within this session.

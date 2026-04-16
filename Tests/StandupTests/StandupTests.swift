@@ -175,10 +175,10 @@ import Testing
     #expect(def.liveChains.mic.isEmpty)
 }
 
-// MARK: - RNNoise Plugin Tests
+// MARK: - Wiener Noise Plugin Tests
 
-@Test func rnnoisePluginProcesses() async throws {
-    let plugin = RNNoiseLivePlugin()
+@Test func wienerNoisePluginProcesses() async throws {
+    let plugin = WienerNoisePlugin()
     let config = PluginConfig(values: ["smoothing": "0.95", "profile_frames": "2"])
     try await plugin.setup(config: config)
     plugin.prepareBuffers(maxFrameCount: 1024)
@@ -204,9 +204,9 @@ import Testing
     await plugin.teardown()
 }
 
-@Test func noiseReductionFactoryCreatesRNNoise() async throws {
-    let plugin = try NoiseReductionFactory.create(strategy: .rnnoise, config: PluginConfig())
-    #expect(plugin.id == "rnnoise")
+@Test func noiseReductionFactoryCreatesWiener() async throws {
+    let plugin = try NoiseReductionFactory.create(strategy: .wiener, config: PluginConfig())
+    #expect(plugin.id == "wiener-noise")
 }
 
 // MARK: - Whisper Plugin Tests
@@ -246,7 +246,7 @@ import Testing
     let liveIds = registry.allLivePluginIds
     #expect(liveIds.contains("noise-gate"))
     #expect(liveIds.contains("spectral-noise"))
-    #expect(liveIds.contains("rnnoise"))
+    #expect(liveIds.contains("wiener-noise"))
     #expect(liveIds.contains("lufs-normalize"))
     #expect(liveIds.contains("peak-normalize"))
     #expect(liveIds.contains("noise-reduction"))  // factory
@@ -327,8 +327,8 @@ private struct AnyDecodable: Decodable {
 
     // Write mock panel data
     let panels = [
-        ComicPanel(index: 0, speaker: "Alice", text: "Let's go!", mood: "excited", startTime: 0, duration: 2, importance: 0.8, panelSize: "large"),
-        ComicPanel(index: 1, speaker: "Bob", text: "Fixed the bug!", mood: "proud", startTime: 2, duration: 3, importance: 0.7, panelSize: "normal"),
+        ComicPanel(index: 0, speaker: "Alice", text: "Let's go!", mood: .excited, startTime: 0, duration: 2, importance: 0.8, panelSize: .large),
+        ComicPanel(index: 1, speaker: "Bob", text: "Fixed the bug!", mood: .proud, startTime: 2, duration: 3, importance: 0.7, panelSize: .normal),
     ]
     let panelsPath = (tmpDir as NSString).appendingPathComponent("panels.json")
     try JSONEncoder().encode(panels).write(to: URL(fileURLWithPath: panelsPath))

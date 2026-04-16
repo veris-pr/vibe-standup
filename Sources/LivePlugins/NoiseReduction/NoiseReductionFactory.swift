@@ -20,7 +20,7 @@ import StandupCore
 public enum NoiseReductionStrategy: String, PluginStrategy, CaseIterable, Sendable {
     case gate
     case spectral
-    case rnnoise
+    case wiener
 }
 
 // MARK: - Factory
@@ -35,8 +35,8 @@ public enum NoiseReductionFactory: LivePluginFactory {
             return NoiseGatePlugin()
         case .spectral:
             return SpectralNoisePlugin()
-        case .rnnoise:
-            return RNNoiseLivePlugin()
+        case .wiener:
+            return WienerNoisePlugin()
         }
     }
 }

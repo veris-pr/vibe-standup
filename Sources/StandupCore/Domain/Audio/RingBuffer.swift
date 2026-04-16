@@ -1,17 +1,21 @@
-/// Lock-free single-producer single-consumer ring buffer.
+/// Lock-free single-producer single-consumer ring buffer for audio data.
 ///
-/// Lives in the domain because it's a core audio primitive — not an
-/// infrastructure concern. The audio thread writes, the writer thread reads.
+/// The audio thread writes, the writer thread reads.
 /// Sized as power-of-2 for fast index masking.
 
 import Foundation
+import os
 
 public final class RingBuffer: @unchecked Sendable {
+    // SAFETY: @unchecked Sendable is correct here — this is a SPSC buffer
+    // where exactly one thread writes and one thread reads. The os_unfair_lock
+    // on the atomic counters ensures memory ordering.
+
     public let capacity: Int
     private let mask: Int
     private let buffer: UnsafeMutablePointer<Float>
-    private let _head = AtomicCounter(0)
-    private let _tail = AtomicCounter(0)
+    private let _head: SPSCCounter
+    private let _tail: SPSCCounter
 
     /// Create a ring buffer. Capacity is rounded up to the next power of 2.
     public init(minimumCapacity: Int) {
@@ -21,6 +25,8 @@ public final class RingBuffer: @unchecked Sendable {
         self.mask = cap - 1
         self.buffer = .allocate(capacity: cap)
         self.buffer.initialize(repeating: 0, count: cap)
+        self._head = SPSCCounter(0)
+        self._tail = SPSCCounter(0)
     }
 
     deinit { buffer.deallocate() }
@@ -29,7 +35,7 @@ public final class RingBuffer: @unchecked Sendable {
     public var availableToWrite: Int { capacity - availableToRead }
 
     /// Write frames from source. Returns frames actually written.
-    /// Called from producer (audio) thread.
+    /// Called from producer (audio) thread only.
     @discardableResult
     public func write(from source: UnsafePointer<Float>, count: Int) -> Int {
         let writable = min(count, availableToWrite)
@@ -49,7 +55,7 @@ public final class RingBuffer: @unchecked Sendable {
     }
 
     /// Read frames into destination. Returns frames actually read.
-    /// Called from consumer (writer) thread.
+    /// Called from consumer (writer) thread only.
     @discardableResult
     public func read(into destination: UnsafeMutablePointer<Float>, count: Int) -> Int {
         let readable = min(count, availableToRead)
@@ -69,19 +75,27 @@ public final class RingBuffer: @unchecked Sendable {
     }
 }
 
-// MARK: - Atomic Counter
+// MARK: - SPSC Counter (Thread-Safe)
 
-/// Minimal atomic integer for lock-free inter-thread communication.
-private final class AtomicCounter: @unchecked Sendable {
-    private let storage: UnsafeMutablePointer<Int>
+/// Thread-safe counter for SPSC ring buffer coordination.
+/// Uses `OSAllocatedUnfairLock` for proper memory ordering between
+/// the producer and consumer threads.
+private final class SPSCCounter: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: 0)
+    private let _value: UnsafeMutablePointer<Int>
 
     init(_ initial: Int) {
-        storage = .allocate(capacity: 1)
-        storage.initialize(to: initial)
+        _value = .allocate(capacity: 1)
+        _value.initialize(to: initial)
     }
 
-    deinit { storage.deallocate() }
+    deinit { _value.deallocate() }
 
-    func load() -> Int { storage.pointee }
-    func store(_ value: Int) { storage.pointee = value }
+    func load() -> Int {
+        lock.withLock { _ in _value.pointee }
+    }
+
+    func store(_ value: Int) {
+        lock.withLock { _ in _value.pointee = value }
+    }
 }

@@ -7,6 +7,7 @@ import Foundation
 import StandupCore
 
 public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.cleanTranscript] }
     override public var outputArtifacts: [ArtifactType] { [.comicPanels] }
 
@@ -30,7 +31,7 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
         }
 
         let data = try Data(contentsOf: URL(fileURLWithPath: transcriptRef.path))
-        let lines = try JSONDecoder().decode([DialogueInput].self, from: data)
+        let lines = try JSONDecoder().decode([DialogueLine].self, from: data)
 
         // Score each line for "comic-worthiness"
         var scoredLines = lines.map { line -> ScoredLine in
@@ -59,7 +60,7 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
                 startTime: scored.line.startTime,
                 duration: scored.line.endTime - scored.line.startTime,
                 importance: scored.score,
-                panelSize: scored.score > 0.7 ? "large" : "normal"
+                panelSize: scored.score > 0.7 ? .large : .normal
             )
         }
 
@@ -72,7 +73,7 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - Importance Scoring
 
-    private func computeImportance(_ line: DialogueInput) -> Double {
+    private func computeImportance(_ line: DialogueLine) -> Double {
         var score = 0.3 // base score
 
         let text = line.text.lowercased()
@@ -112,16 +113,16 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - Mood Detection
 
-    private func detectMood(_ text: String) -> String {
+    private func detectMood(_ text: String) -> Mood {
         let lower = text.lowercased()
 
-        let moods: [(String, [String])] = [
-            ("excited", ["awesome", "amazing", "great", "shipped", "finally", "yay", "!"]),
-            ("proud", ["done", "finished", "fixed", "built", "merged", "deployed", "completed"]),
-            ("frustrated", ["blocked", "stuck", "broken", "failed", "ugh", "terrible", "bug"]),
-            ("thinking", ["maybe", "wondering", "think", "consider", "hmm", "not sure"]),
-            ("asking", ["?", "how", "what", "why", "when", "could", "should"]),
-            ("happy", ["nice", "cool", "love", "good", "thanks"]),
+        let moods: [(Mood, [String])] = [
+            (.excited, ["awesome", "amazing", "great", "shipped", "finally", "yay", "!"]),
+            (.proud, ["done", "finished", "fixed", "built", "merged", "deployed", "completed"]),
+            (.frustrated, ["blocked", "stuck", "broken", "failed", "ugh", "terrible", "bug"]),
+            (.thinking, ["maybe", "wondering", "think", "consider", "hmm", "not sure"]),
+            (.asking, ["?", "how", "what", "why", "when", "could", "should"]),
+            (.happy, ["nice", "cool", "love", "good", "thanks"]),
         ]
 
         for (mood, keywords) in moods {
@@ -129,7 +130,7 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
                 return mood
             }
         }
-        return "neutral"
+        return .neutral
     }
 
     // MARK: - Text Condensing
@@ -158,31 +159,13 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
 
 // MARK: - Types
 
-private struct DialogueInput: Codable {
-    let startTime: Double
-    let endTime: Double
-    let speaker: String
-    let text: String
-}
-
 private struct ScoredLine {
-    let line: DialogueInput
+    let line: DialogueLine
     let score: Double
-    let mood: String
+    let mood: Mood
 }
 
-public struct ComicPanel: Codable, Sendable {
-    let index: Int
-    let speaker: String
-    let text: String
-    let mood: String
-    let startTime: Double
-    let duration: Double
-    let importance: Double
-    let panelSize: String
-}
-
-enum ComicError: Error, LocalizedError {
+enum ComicError: Error, LocalizedError, Sendable {
     case missingInput(String)
     var errorDescription: String? {
         switch self {

@@ -5,6 +5,7 @@ import Foundation
 import StandupCore
 
 public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin — runs sequentially in pipeline.
     override public var inputArtifacts: [ArtifactType] { [.audioChunks] }
     override public var outputArtifacts: [ArtifactType] { [.diarizationLabels] }
 
@@ -58,18 +59,18 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
                 chunkDuration = 1.0
             }
 
-            let speaker: String
+            let speaker: Speaker
             if micActive && sysActive {
-                speaker = micRMS > sysRMS ? "me" : "them"
+                speaker = micRMS > sysRMS ? .me : .them
             } else if micActive {
-                speaker = "me"
+                speaker = .me
             } else if sysActive {
-                speaker = "them"
+                speaker = .them
             } else {
-                speaker = "silence"
+                speaker = .silence
             }
 
-            if speaker != "silence" {
+            if speaker != .silence {
                 segments.append(DiarizationSegment(startTime: timeOffset, endTime: timeOffset + chunkDuration, speaker: speaker))
             }
             timeOffset += chunkDuration
@@ -113,6 +114,7 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
 /// Energy-based diarizer — detects speaker changes by energy patterns
 /// within a single audio stream (when channels aren't available).
 public final class EnergyDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.audioChunks] }
     override public var outputArtifacts: [ArtifactType] { [.diarizationLabels] }
 
@@ -130,14 +132,6 @@ public final class EnergyDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
         try data.write(to: URL(fileURLWithPath: outputPath))
         return [Artifact(stageId: id, type: .diarizationLabels, path: outputPath)]
     }
-}
-
-// MARK: - Shared Types
-
-struct DiarizationSegment: Codable {
-    let startTime: Double
-    var endTime: Double
-    let speaker: String
 }
 
 // MARK: - JSON Encoder Helper (shared across stage plugins)

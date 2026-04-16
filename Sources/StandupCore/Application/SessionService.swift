@@ -5,6 +5,8 @@
 import Foundation
 
 public final class SessionService: @unchecked Sendable {
+    // SAFETY: @unchecked Sendable — called from CLI main thread sequentially.
+    // No concurrent access to mutable state (activeSession, captureEngine).
     private let config: StandupConfig
     private let repository: SessionRepository
     private var activeSession: Session?
@@ -62,8 +64,7 @@ public final class SessionService: @unchecked Sendable {
         await captureEngine?.stop()
         captureEngine = nil
 
-        session.status = .processing
-        session.endTime = Date()
+        try session.markProcessing()
         try repository.update(session)
 
         activeSession = nil
@@ -74,7 +75,7 @@ public final class SessionService: @unchecked Sendable {
         guard var session = try repository.find(id: sessionId) else {
             throw SessionError.notFound(sessionId)
         }
-        session.status = .complete
+        try session.markComplete()
         try repository.update(session)
     }
 
@@ -82,7 +83,7 @@ public final class SessionService: @unchecked Sendable {
         guard var session = try repository.find(id: sessionId) else {
             throw SessionError.notFound(sessionId)
         }
-        session.status = .failed
+        try session.markFailed()
         try repository.update(session)
     }
 

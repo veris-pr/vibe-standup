@@ -7,6 +7,8 @@
 import StandupCore
 
 public final class SpectralNoisePlugin: BaseLivePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseLivePlugin.
+    // Scratch buffer allocated once in prepareBuffers(), used only from audio thread.
     private var smoothingFactor: Float = 0.98
     private var noiseFloor: Float = 0.001
 

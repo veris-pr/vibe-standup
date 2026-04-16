@@ -4,6 +4,7 @@ import Foundation
 import StandupCore
 
 public final class PeakNormalizePlugin: BaseLivePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseLivePlugin.
     private var targetPeak: Float = 0.9
     private var currentGain: Float = 1.0
     private let smoothing: Float = 0.1

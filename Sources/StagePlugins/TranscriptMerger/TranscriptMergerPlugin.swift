@@ -4,6 +4,7 @@ import Foundation
 import StandupCore
 
 public final class TranscriptMergerPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.transcriptionSegments, .diarizationLabels] }
     override public var outputArtifacts: [ArtifactType] { [.cleanTranscript] }
 
@@ -28,15 +29,15 @@ public final class TranscriptMergerPlugin: BaseStagePlugin, @unchecked Sendable 
             throw MergerError.missingInput("diarization labels")
         }
         let speakers = try decoder.decode(
-            [SpeakerLabel].self,
+            [DiarizationSegment].self,
             from: Data(contentsOf: URL(fileURLWithPath: diarizationRef.path))
         )
 
         // Merge: for each segment, find overlapping speaker label
-        var lines: [DialogueLine] = segments.map { seg in
+        let lines: [DialogueLine] = segments.map { seg in
             let mid = (seg.startTime + seg.endTime) / 2
             let speaker = speakers.first { mid >= $0.startTime && mid < $0.endTime }
-            return DialogueLine(startTime: seg.startTime, endTime: seg.endTime, speaker: speaker?.speaker ?? "unknown", text: seg.text)
+            return DialogueLine(startTime: seg.startTime, endTime: seg.endTime, speaker: speaker?.speaker.rawValue ?? "unknown", text: seg.text)
         }
 
         // Merge adjacent same-speaker lines
@@ -68,20 +69,7 @@ struct TranscriptionSegment: Codable {
     let text: String
 }
 
-struct SpeakerLabel: Codable {
-    let startTime: Double
-    let endTime: Double
-    let speaker: String
-}
-
-struct DialogueLine: Codable {
-    let startTime: Double
-    var endTime: Double
-    let speaker: String
-    var text: String
-}
-
-enum MergerError: Error, LocalizedError {
+enum MergerError: Error, LocalizedError, Sendable {
     case missingInput(String)
     var errorDescription: String? {
         switch self {

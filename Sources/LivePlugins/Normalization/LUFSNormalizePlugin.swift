@@ -4,6 +4,7 @@ import Foundation
 import StandupCore
 
 public final class LUFSNormalizePlugin: BaseLivePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseLivePlugin.
     private var targetRMS: Float = 0.1
     private var currentGain: Float = 1.0
     private let smoothing: Float = 0.05
@@ -37,13 +38,9 @@ public final class LUFSNormalizePlugin: BaseLivePlugin, @unchecked Sendable {
         for i in 0..<frameCount {
             buffer[i] *= currentGain
             if buffer[i] > 1.0 || buffer[i] < -1.0 {
-                buffer[i] = tanh(buffer[i])
+                buffer[i] = Float(Foundation.tanh(Double(buffer[i])))
             }
         }
         return .modified
     }
-}
-
-private func tanh(_ x: Float) -> Float {
-    Foundation.tanh(Double(x)).isNaN ? 0 : Float(Foundation.tanh(Double(x)))
 }

@@ -9,6 +9,7 @@ import Foundation
 import StandupCore
 
 public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.audioChunks] }
     override public var outputArtifacts: [ArtifactType] { [.transcriptionSegments] }
 

@@ -1,13 +1,26 @@
 /// Application service: orchestrates pipeline parsing and execution.
 
 import Foundation
-import Yams
 
 public final class PipelineService: @unchecked Sendable {
+    // SAFETY: @unchecked Sendable — registry is populated at startup and then read-only.
+    // Methods called sequentially from session lifecycle.
     private let registry: PluginRegistry
 
     public init(registry: PluginRegistry) {
         self.registry = registry
+    }
+
+    // MARK: - Pipeline Loading (delegates to Infrastructure)
+
+    /// Parse a pipeline definition from YAML string.
+    public static func parse(yaml: String) throws -> PipelineDefinition {
+        try PipelineYAMLParser.parse(yaml: yaml)
+    }
+
+    /// Load a pipeline definition from a YAML file.
+    public static func load(from path: String) throws -> PipelineDefinition {
+        try PipelineYAMLParser.load(from: path)
     }
 
     // MARK: - Live Chain Building
@@ -70,93 +83,22 @@ public final class PipelineService: @unchecked Sendable {
             let outputDir = context.outputDirectory(for: stage.id)
             try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
 
-            try await plugin.setup(config: pluginConfig)
-            let outputs = try await plugin.execute(context: context)
-            await plugin.teardown()
+            do {
+                try await plugin.setup(config: pluginConfig)
+                let outputs = try await plugin.execute(context: context)
+                await plugin.teardown()
 
-            if let output = outputs.first {
-                artifacts[stage.id] = output
-            }
-        }
-    }
-
-    // MARK: - Pipeline Parsing
-
-    /// Parse a pipeline definition from YAML string.
-    public static func parse(yaml: String) throws -> PipelineDefinition {
-        guard let doc = try Yams.load(yaml: yaml) as? [String: Any] else {
-            throw PipelineError.invalidYAML
-        }
-
-        let name = doc["name"] as? String ?? "unnamed"
-        let description = doc["description"] as? String ?? ""
-
-        // Parse capture source configuration
-        var captureSource: AudioCaptureSource? = nil
-        var virtualDeviceName: String? = nil
-        if let capture = doc["capture"] as? [String: Any] {
-            if let sourceStr = capture["source"] as? String {
-                captureSource = AudioCaptureSource(rawValue: sourceStr)
-            }
-            virtualDeviceName = capture["virtual_device"] as? String
-        } else if let sourceStr = doc["capture_source"] as? String {
-            captureSource = AudioCaptureSource(rawValue: sourceStr)
-        }
-
-        var micRefs: [PluginRef] = []
-        var sysRefs: [PluginRef] = []
-        if let live = doc["live"] as? [String: Any] {
-            micRefs = parseLiveRefs(live["mic"])
-            sysRefs = parseLiveRefs(live["system"])
-        }
-
-        var stages: [StageDefinition] = []
-        if let stageList = doc["stages"] as? [[String: Any]] {
-            for s in stageList {
-                let id = s["id"] as? String ?? "unknown"
-                let pluginId = s["plugin"] as? String ?? id
-                var inputs: [String] = []
-                if let inp = s["input"] as? String {
-                    inputs = [inp]
-                } else if let inps = s["inputs"] as? [String] {
-                    inputs = inps
+                if let output = outputs.first {
+                    artifacts[stage.id] = output
                 }
-                let config = flattenConfig(s["config"])
-                stages.append(StageDefinition(id: id, pluginId: pluginId, inputs: inputs, config: config))
+            } catch {
+                await plugin.teardown()
+                throw PipelineError.stageExecutionFailed(stageId: stage.id, underlying: error)
             }
         }
-
-        return PipelineDefinition(
-            name: name,
-            description: description,
-            captureSource: captureSource,
-            virtualDeviceName: virtualDeviceName,
-            liveChains: LiveChainConfig(mic: micRefs, system: sysRefs),
-            stages: stages
-        )
-    }
-
-    /// Load a pipeline definition from a YAML file.
-    public static func load(from path: String) throws -> PipelineDefinition {
-        let yaml = try String(contentsOfFile: path, encoding: .utf8)
-        return try parse(yaml: yaml)
     }
 
     // MARK: - Helpers
-
-    private static func parseLiveRefs(_ value: Any?) -> [PluginRef] {
-        guard let list = value as? [[String: Any]] else { return [] }
-        return list.map { item in
-            let pluginId = item["plugin"] as? String ?? "unknown"
-            let config = flattenConfig(item["config"])
-            return PluginRef(pluginId: pluginId, config: config)
-        }
-    }
-
-    private static func flattenConfig(_ value: Any?) -> [String: String] {
-        guard let dict = value as? [String: Any] else { return [:] }
-        return dict.reduce(into: [:]) { $0[$1.key] = "\($1.value)" }
-    }
 
     private func topologicalSort(_ stages: [StageDefinition]) -> [StageDefinition] {
         let stageMap = Dictionary(uniqueKeysWithValues: stages.map { ($0.id, $0) })

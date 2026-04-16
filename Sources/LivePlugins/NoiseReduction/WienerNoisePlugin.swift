@@ -2,16 +2,19 @@
 ///
 /// A functional noise reducer using spectral subtraction with Wiener filtering.
 /// Processes audio in-place with pre-allocated buffers.
-/// Can be swapped for a RNNoise C wrapper when that library is vendored.
 ///
-/// RNNoise operates on 480-sample frames (10ms at 48kHz). This plugin
-/// follows the same convention for drop-in compatibility.
+/// Operates on 480-sample frames (10ms at 48kHz) for compatibility with
+/// RNNoise-style pipelines, enabling future drop-in replacement with a
+/// neural-network-based denoiser.
 
 import Foundation
 import StandupCore
 
-public final class RNNoiseLivePlugin: BaseLivePlugin, @unchecked Sendable {
-    /// RNNoise-compatible frame size: 480 samples = 10ms at 48kHz
+public final class WienerNoisePlugin: BaseLivePlugin, @unchecked Sendable {
+    // SAFETY: @unchecked Sendable — buffers allocated once in prepareBuffers,
+    // process() called from single audio thread only.
+
+    /// Frame size: 480 samples = 10ms at 48kHz
     static let frameSize = 480
 
     // Pre-allocated buffers
@@ -31,7 +34,7 @@ public final class RNNoiseLivePlugin: BaseLivePlugin, @unchecked Sendable {
     private var overlapCount: Int = 0
 
     public init() {
-        super.init(id: "rnnoise")
+        super.init(id: "wiener-noise")
     }
 
     override public func onSetup() async throws {

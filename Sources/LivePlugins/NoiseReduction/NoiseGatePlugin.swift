@@ -6,6 +6,8 @@ import Foundation
 import StandupCore
 
 public final class NoiseGatePlugin: BaseLivePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseLivePlugin — mutable state
+    // written in setup/validate, read-only during process() on audio thread.
     private var thresholdLinear: Float = 0.001
     private var holdFrames: Int = 4800
     private var holdCounter: Int = 0
@@ -23,7 +25,7 @@ public final class NoiseGatePlugin: BaseLivePlugin, @unchecked Sendable {
         let thresholdDB = config.double(for: "threshold_db", default: -60)
         thresholdLinear = Float(pow(10.0, thresholdDB / 20.0))
         let holdMs = config.double(for: "hold_ms", default: 100)
-        holdFrames = Int(48000 * holdMs / 1000)
+        holdFrames = Int(AudioFormat.standard.sampleRate * holdMs / 1000)
     }
 
     override public func process(buffer: UnsafeMutablePointer<Float>, frameCount: Int, channel: AudioChannel) -> LivePluginResult {
@@ -46,6 +48,6 @@ public final class NoiseGatePlugin: BaseLivePlugin, @unchecked Sendable {
     }
 }
 
-enum NoiseReductionError: Error {
+enum NoiseReductionError: Error, Sendable {
     case invalidThreshold(Double)
 }

@@ -3,6 +3,7 @@
 import Foundation
 
 public final class SubprocessStagePlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     private let executablePath: String
     private let arguments: [String]
     private let _inputArtifacts: [ArtifactType]

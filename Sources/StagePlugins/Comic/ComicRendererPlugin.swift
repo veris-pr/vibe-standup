@@ -7,6 +7,7 @@ import Foundation
 import StandupCore
 
 public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
+    // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.comicPanels] }
     override public var outputArtifacts: [ArtifactType] { [.comicOutput] }
 
@@ -27,7 +28,7 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
         }
 
         let data = try Data(contentsOf: URL(fileURLWithPath: panelsRef.path))
-        let panels = try JSONDecoder().decode([ComicPanelInput].self, from: data)
+        let panels = try JSONDecoder().decode([ComicPanel].self, from: data)
 
         let html = renderHTML(panels: panels)
 
@@ -40,7 +41,7 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - HTML Rendering
 
-    private func renderHTML(panels: [ComicPanelInput]) -> String {
+    private func renderHTML(panels: [ComicPanel]) -> String {
         // Assign consistent colors to speakers
         var speakerColors: [String: SpeakerStyle] = [:]
         let palette: [SpeakerStyle] = [
@@ -61,8 +62,8 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
         let panelHTML = panels.map { panel -> String in
             let style = speakerColors[panel.speaker] ?? palette[0]
-            let moodEmoji = moodToEmoji(panel.mood)
-            let sizeClass = panel.panelSize == "large" ? "panel-large" : "panel-normal"
+            let moodEmoji = panel.mood.emoji
+            let sizeClass = panel.panelSize == .large ? "panel-large" : "panel-normal"
 
             return """
             <div class="panel \(sizeClass)">
@@ -178,18 +179,6 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func moodToEmoji(_ mood: String) -> String {
-        switch mood {
-        case "excited": return "🎉"
-        case "proud": return "💪"
-        case "frustrated": return "😤"
-        case "thinking": return "🤔"
-        case "asking": return "❓"
-        case "happy": return "😊"
-        default: return "💬"
-        }
-    }
-
     private func formatTime(_ seconds: Double) -> String {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
@@ -206,24 +195,13 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
 // MARK: - Types
 
-private struct ComicPanelInput: Codable {
-    let index: Int
-    let speaker: String
-    let text: String
-    let mood: String
-    let startTime: Double
-    let duration: Double
-    let importance: Double
-    let panelSize: String
-}
-
 private struct SpeakerStyle {
     let bg: String
     let text: String
     let bubble: String
 }
 
-private enum RenderError: Error, LocalizedError {
+private enum RenderError: Error, LocalizedError, Sendable {
     case missingInput(String)
     var errorDescription: String? {
         switch self {

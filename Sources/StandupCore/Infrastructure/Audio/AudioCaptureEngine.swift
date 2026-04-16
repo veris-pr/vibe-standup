@@ -7,37 +7,44 @@ import Foundation
 import ScreenCaptureKit
 
 public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
-    public static let defaultFormat = AudioFormat.standard
+    // SAFETY: @unchecked Sendable — start/stop called from main actor,
+    // audio callbacks run on audio thread, writer on utility thread.
 
     private let sessionDirectory: String
     private let micChain: LivePluginChain
     private let systemChain: LivePluginChain
     private let micRingBuffer: RingBuffer
     private let systemRingBuffer: RingBuffer
+    private let chunkWriter: ChunkWriter
 
     private var audioEngine: AVAudioEngine?
     private var scStream: SCStream?
     private var streamDelegate: SystemAudioStreamDelegate?
     private var writerTask: Task<Void, Never>?
-    private var isRunning = false
-    private var chunkIndex = 0
-    private let startTimestamp: TimeInterval
 
-    public weak var delegate: AudioCaptureDelegate?
+    public weak var delegate: AudioCaptureDelegate? {
+        didSet { chunkWriter.delegate = delegate }
+    }
 
     public init(sessionDirectory: String, micChain: LivePluginChain, systemChain: LivePluginChain) {
-        let bufferCapacity = Int(Self.defaultFormat.sampleRate * 2)
+        let bufferSeconds = 2
+        let bufferCapacity = Int(AudioFormat.standard.sampleRate) * bufferSeconds
         self.sessionDirectory = sessionDirectory
         self.micChain = micChain
         self.systemChain = systemChain
         self.micRingBuffer = RingBuffer(minimumCapacity: bufferCapacity)
         self.systemRingBuffer = RingBuffer(minimumCapacity: bufferCapacity)
-        self.startTimestamp = ProcessInfo.processInfo.systemUptime
+        self.chunkWriter = ChunkWriter(
+            sessionDirectory: sessionDirectory,
+            micRingBuffer: micRingBuffer,
+            systemRingBuffer: systemRingBuffer,
+            startTimestamp: ProcessInfo.processInfo.systemUptime
+        )
     }
 
     public func start() async throws {
-        guard !isRunning else { return }
-        isRunning = true
+        guard !chunkWriter.isRunning else { return }
+        chunkWriter.isRunning = true
 
         let maxFrames = 1024
         micChain.prepareAll(maxFrameCount: maxFrames)
@@ -49,13 +56,13 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
         try startMicCapture()
         try await startSystemAudioCapture()
 
-        writerTask = Task.detached(priority: .utility) { [weak self] in
-            await self?.writerLoop()
+        writerTask = Task.detached(priority: .utility) { [chunkWriter] in
+            await chunkWriter.writerLoop()
         }
     }
 
     public func stop() async {
-        isRunning = false
+        chunkWriter.isRunning = false
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine = nil
@@ -73,54 +80,12 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
 
     private func startMicCapture() throws {
         let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-
-        // Use the input node's native format — specifying a custom format causes crashes
-        let nativeFormat = inputNode.outputFormat(forBus: 0)
-
-        // Target format for our pipeline: mono Float32 at our sample rate
-        let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.defaultFormat.sampleRate,
-            channels: 1,
-            interleaved: false
-        )!
-
-        // If native format matches, tap directly. Otherwise, use a converter.
-        let needsConversion = nativeFormat.sampleRate != targetFormat.sampleRate
-            || nativeFormat.channelCount != targetFormat.channelCount
-
-        if needsConversion, let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) {
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
-                guard let self, self.isRunning else { return }
-
-                let frameCapacity = AVAudioFrameCount(
-                    Double(buffer.frameLength) * targetFormat.sampleRate / nativeFormat.sampleRate
-                )
-                guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else { return }
-
-                var error: NSError?
-                converter.convert(to: converted, error: &error) { _, outStatus in
-                    outStatus.pointee = .haveData
-                    return buffer
-                }
-                guard error == nil, converted.frameLength > 0 else { return }
-                guard let floatData = converted.floatChannelData?[0] else { return }
-                let frameCount = Int(converted.frameLength)
-                self.micChain.process(buffer: floatData, frameCount: frameCount)
-                self.micRingBuffer.write(from: floatData, count: frameCount)
-            }
-        } else {
-            // Native format is compatible — tap directly
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-                guard let self, self.isRunning else { return }
-                guard let floatData = buffer.floatChannelData?[0] else { return }
-                let frameCount = Int(buffer.frameLength)
-                self.micChain.process(buffer: floatData, frameCount: frameCount)
-                self.micRingBuffer.write(from: floatData, count: frameCount)
-            }
-        }
-
+        MicTapInstaller.install(
+            on: engine,
+            chain: micChain,
+            ringBuffer: micRingBuffer,
+            isRunning: { [chunkWriter] in chunkWriter.isRunning }
+        )
         engine.prepare()
         try engine.start()
         self.audioEngine = engine
@@ -134,7 +99,7 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
-        config.sampleRate = Int(Self.defaultFormat.sampleRate)
+        config.sampleRate = Int(AudioFormat.standard.sampleRate)
         config.channelCount = 1
         config.width = 2
         config.height = 2
@@ -145,8 +110,8 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
         }
         let filter = SCContentFilter(display: display, excludingWindows: [])
 
-        let delegate = SystemAudioStreamDelegate { [weak self] buffer, frameCount in
-            guard let self, self.isRunning else { return }
+        let delegate = SystemAudioStreamDelegate { [weak self, chunkWriter] buffer, frameCount in
+            guard let self, chunkWriter.isRunning else { return }
             self.systemChain.process(buffer: buffer, frameCount: frameCount)
             self.systemRingBuffer.write(from: buffer, count: frameCount)
         }
@@ -157,63 +122,12 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
         try await stream.startCapture()
         self.scStream = stream
     }
-
-    // MARK: - Writer Loop
-
-    private func writerLoop() async {
-        let chunkFrames = Int(Self.defaultFormat.sampleRate) // 1 second
-        let micTemp = UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames)
-        let sysTemp = UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames)
-        defer {
-            micTemp.deallocate()
-            sysTemp.deallocate()
-        }
-
-        while isRunning || micRingBuffer.availableToRead > 0 || systemRingBuffer.availableToRead > 0 {
-            let micRead = micRingBuffer.read(into: micTemp, count: chunkFrames)
-            let sysRead = systemRingBuffer.read(into: sysTemp, count: chunkFrames)
-
-            // Write paired chunks with the same index for diarization alignment
-            if micRead > 0 || sysRead > 0 {
-                let index = chunkIndex
-                chunkIndex += 1
-
-                if micRead > 0 {
-                    writeChunk(from: micTemp, frameCount: micRead, channel: .mic, index: index)
-                }
-                if sysRead > 0 {
-                    writeChunk(from: sysTemp, frameCount: sysRead, channel: .system, index: index)
-                }
-            } else {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
-        }
-    }
-
-    private func writeChunk(from buffer: UnsafeMutablePointer<Float>, frameCount: Int, channel: AudioChannel, index: Int) {
-        let chunksDir = (sessionDirectory as NSString).appendingPathComponent("chunks")
-
-        let filename = String(format: "%06d_%@.pcm", index, channel.rawValue)
-        let path = (chunksDir as NSString).appendingPathComponent(filename)
-        let data = Data(bytes: buffer, count: frameCount * MemoryLayout<Float>.size)
-        try? data.write(to: URL(fileURLWithPath: path))
-
-        let elapsed = ProcessInfo.processInfo.systemUptime - startTimestamp
-        let chunk = AudioChunk(
-            index: index,
-            channel: channel,
-            format: Self.defaultFormat,
-            frameCount: frameCount,
-            timestamp: elapsed,
-            path: path
-        )
-        delegate?.didCaptureChunk(chunk)
-    }
 }
 
 // MARK: - ScreenCaptureKit Stream Output
 
 private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
+    // SAFETY: @unchecked Sendable — handler closure captures only Sendable references.
     let handler: (UnsafeMutablePointer<Float>, Int) -> Void
 
     init(handler: @escaping (UnsafeMutablePointer<Float>, Int) -> Void) {

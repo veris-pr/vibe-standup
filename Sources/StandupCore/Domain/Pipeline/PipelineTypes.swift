@@ -97,19 +97,109 @@ public struct Artifact: Sendable, Codable, Equatable {
     }
 }
 
+// MARK: - Shared Stage Plugin Value Types
+
+/// Identifies the speaker in a diarized segment.
+public enum Speaker: String, Sendable, Codable, CaseIterable {
+    case me
+    case them
+    case silence
+    case unknown
+}
+
+/// Mood detected from transcript text, used for comic panel rendering.
+public enum Mood: String, Sendable, Codable, CaseIterable {
+    case excited
+    case proud
+    case frustrated
+    case thinking
+    case asking
+    case happy
+    case neutral
+
+    public var emoji: String {
+        switch self {
+        case .excited: "🎉"
+        case .proud: "💪"
+        case .frustrated: "😤"
+        case .thinking: "🤔"
+        case .asking: "❓"
+        case .happy: "😊"
+        case .neutral: "💬"
+        }
+    }
+}
+
+/// Size category for a comic panel.
+public enum PanelSize: String, Sendable, Codable {
+    case large
+    case normal
+}
+
+/// A single segment of diarized audio with speaker attribution.
+public struct DiarizationSegment: Sendable, Codable {
+    public let startTime: Double
+    public var endTime: Double
+    public let speaker: Speaker
+
+    public init(startTime: Double, endTime: Double, speaker: Speaker) {
+        self.startTime = startTime
+        self.endTime = endTime
+        self.speaker = speaker
+    }
+}
+
+/// A line of dialogue from the merged transcript.
+public struct DialogueLine: Sendable, Codable {
+    public let startTime: Double
+    public var endTime: Double
+    public let speaker: String
+    public var text: String
+
+    public init(startTime: Double, endTime: Double, speaker: String, text: String) {
+        self.startTime = startTime
+        self.endTime = endTime
+        self.speaker = speaker
+        self.text = text
+    }
+}
+
+/// A comic panel definition — output of the formatter, input to the renderer.
+public struct ComicPanel: Sendable, Codable {
+    public let index: Int
+    public let speaker: String
+    public let text: String
+    public let mood: Mood
+    public let startTime: Double
+    public let duration: Double
+    public let importance: Double
+    public let panelSize: PanelSize
+
+    public init(index: Int, speaker: String, text: String, mood: Mood, startTime: Double, duration: Double, importance: Double, panelSize: PanelSize) {
+        self.index = index
+        self.speaker = speaker
+        self.text = text
+        self.mood = mood
+        self.startTime = startTime
+        self.duration = duration
+        self.importance = importance
+        self.panelSize = panelSize
+    }
+}
+
 // MARK: - Pipeline Errors
 
 public enum PipelineError: Error, LocalizedError, Sendable {
     case invalidYAML
+    case missingField(String)
     case pluginNotFound(String)
-    case cyclicDependency
     case stageExecutionFailed(stageId: String, underlying: Error)
 
     public var errorDescription: String? {
         switch self {
         case .invalidYAML: "Invalid pipeline YAML"
+        case .missingField(let field): "Missing required field '\(field)' in pipeline YAML"
         case .pluginNotFound(let id): "Plugin not found: \(id)"
-        case .cyclicDependency: "Cyclic dependency in pipeline stages"
         case .stageExecutionFailed(let id, let err): "Stage '\(id)' failed: \(err.localizedDescription)"
         }
     }
