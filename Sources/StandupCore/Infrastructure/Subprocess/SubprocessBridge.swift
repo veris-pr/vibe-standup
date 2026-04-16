@@ -59,15 +59,18 @@ public final class SubprocessStagePlugin: BaseStagePlugin, @unchecked Sendable {
         stdinPipe.fileHandleForWriting.write(Data("\n".utf8))
         stdinPipe.fileHandleForWriting.closeFile()
 
+        // Read pipes BEFORE waitUntilExit to prevent deadlock when
+        // subprocess output exceeds the OS pipe buffer (~64KB).
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             let errorMsg = String(data: stderrData, encoding: .utf8) ?? "unknown error"
             throw SubprocessError.nonZeroExit(id, Int(process.terminationStatus), errorMsg)
         }
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let output = try decoder.decode(SubprocessOutput.self, from: stdoutData)

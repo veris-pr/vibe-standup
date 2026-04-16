@@ -66,10 +66,13 @@ public final class PipelineService: @unchecked Sendable {
                         path: session.chunksPath
                     )
                 } else {
-                    let stageId = input.replacingOccurrences(of: ".output", with: "")
-                    if let ref = artifacts[stageId] {
-                        stageInputs[stageId] = ref
+                    let stageId = input.hasSuffix(".output")
+                        ? String(input.dropLast(7))
+                        : input
+                    guard let ref = artifacts[stageId] else {
+                        throw PipelineError.missingField("Stage '\(stage.id)' references input '\(input)' but stage '\(stageId)' produced no output")
                     }
+                    stageInputs[stageId] = ref
                 }
             }
 
@@ -88,8 +91,10 @@ public final class PipelineService: @unchecked Sendable {
                 let outputs = try await plugin.execute(context: context)
                 await plugin.teardown()
 
-                if let output = outputs.first {
-                    artifacts[stage.id] = output
+                // Store all output artifacts, keyed as "stageId" for first, "stageId.N" for subsequent
+                for (i, output) in outputs.enumerated() {
+                    let key = i == 0 ? stage.id : "\(stage.id).\(i)"
+                    artifacts[key] = output
                 }
             } catch {
                 await plugin.teardown()
@@ -109,7 +114,9 @@ public final class PipelineService: @unchecked Sendable {
             guard !visited.contains(id), let stage = stageMap[id] else { return }
             visited.insert(id)
             for input in stage.inputs {
-                let depId = input.replacingOccurrences(of: ".output", with: "")
+                let depId = input.hasSuffix(".output")
+                    ? String(input.dropLast(7))
+                    : input
                 if stageMap[depId] != nil { visit(depId) }
             }
             result.append(stage)

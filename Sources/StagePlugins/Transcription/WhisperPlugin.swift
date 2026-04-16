@@ -8,6 +8,16 @@
 import Foundation
 import StandupCore
 
+public enum WhisperError: Error, LocalizedError, Sendable {
+    case transcriptionFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .transcriptionFailed(let msg): "Whisper transcription failed: \(msg)"
+        }
+    }
+}
+
 public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
     // SAFETY: Inherits Sendable contract from BaseStagePlugin.
     override public var inputArtifacts: [ArtifactType] { [.audioChunks] }
@@ -48,7 +58,9 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         try mergeChunksToWAV(chunksDir: chunksDir, outputPath: mergedWAV)
 
         let segments: [WhisperSegmentOutput]
-        if !whisperPath.isEmpty && FileManager.default.fileExists(atPath: whisperPath) && !modelPath.isEmpty {
+        let fm = FileManager.default
+        if !whisperPath.isEmpty && fm.fileExists(atPath: whisperPath)
+            && !modelPath.isEmpty && fm.fileExists(atPath: modelPath) {
             segments = try runWhisperCpp(wavPath: mergedWAV, outputDir: outputDir)
         } else {
             // Fallback: detect audio duration and emit placeholder
@@ -68,21 +80,50 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
     private func mergeChunksToWAV(chunksDir: String, outputPath: String) throws {
         let fm = FileManager.default
-        // Prefer mic channel for transcription, fall back to system
-        var files = try fm.contentsOfDirectory(atPath: chunksDir)
-            .filter { $0.hasSuffix(".pcm") && $0.contains("_mic") }
+        let allFiles = try fm.contentsOfDirectory(atPath: chunksDir)
+            .filter { $0.hasSuffix(".pcm") }
             .sorted()
 
-        if files.isEmpty {
-            files = try fm.contentsOfDirectory(atPath: chunksDir)
-                .filter { $0.hasSuffix(".pcm") && $0.contains("_system") }
-                .sorted()
+        // Group by chunk index to mix mic + system together
+        var chunkIndices: [String: (mic: String?, system: String?)] = [:]
+        for file in allFiles {
+            // File format: 000001_mic.pcm or 000001_system.pcm
+            let name = (file as NSString).deletingPathExtension
+            if name.hasSuffix("_mic") {
+                let idx = String(name.dropLast(4))
+                chunkIndices[idx, default: (nil, nil)].mic = file
+            } else if name.hasSuffix("_system") {
+                let idx = String(name.dropLast(7))
+                chunkIndices[idx, default: (nil, nil)].system = file
+            }
         }
 
         var allSamples = Data()
-        for file in files {
-            let path = (chunksDir as NSString).appendingPathComponent(file)
-            if let data = fm.contents(atPath: path) {
+        for idx in chunkIndices.keys.sorted() {
+            let pair = chunkIndices[idx]!
+            let micPath = pair.mic.map { (chunksDir as NSString).appendingPathComponent($0) }
+            let sysPath = pair.system.map { (chunksDir as NSString).appendingPathComponent($0) }
+
+            let micData = micPath.flatMap { fm.contents(atPath: $0) }
+            let sysData = sysPath.flatMap { fm.contents(atPath: $0) }
+
+            // Mix both channels into one for transcription
+            if let mic = micData, let sys = sysData {
+                let micSamples = mic.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                let sysSamples = sys.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                let count = min(micSamples.count, sysSamples.count)
+                var mixed = [Float](repeating: 0, count: count)
+                for i in 0..<count {
+                    mixed[i] = (micSamples[i] + sysSamples[i]) * 0.5
+                }
+                // Append any remaining samples from the longer channel
+                if micSamples.count > count {
+                    mixed.append(contentsOf: micSamples[count...].map { $0 * 0.5 })
+                } else if sysSamples.count > count {
+                    mixed.append(contentsOf: sysSamples[count...].map { $0 * 0.5 })
+                }
+                allSamples.append(mixed.withUnsafeBufferPointer { Data(buffer: $0) })
+            } else if let data = micData ?? sysData {
                 allSamples.append(data)
             }
         }
@@ -127,14 +168,23 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
             "-of", (outputDir as NSString).appendingPathComponent("whisper_out"),
             "--no-prints"
         ]
+        let stderrPipe = Pipe()
         process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardError = stderrPipe
 
         try process.run()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
+        guard process.terminationStatus == 0 else {
+            let errorMsg = String(data: stderrData, encoding: .utf8) ?? "unknown error"
+            throw WhisperError.transcriptionFailed("whisper-cpp exited with code \(process.terminationStatus): \(errorMsg)")
+        }
+
         let jsonPath = (outputDir as NSString).appendingPathComponent("whisper_out.json")
-        guard FileManager.default.fileExists(atPath: jsonPath) else { return [] }
+        guard FileManager.default.fileExists(atPath: jsonPath) else {
+            throw WhisperError.transcriptionFailed("whisper-cpp produced no output JSON")
+        }
 
         let jsonData = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
         let output = try JSONDecoder().decode(WhisperJSONOutput.self, from: jsonData)
@@ -156,7 +206,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
         let headerSize = 44
         let dataSize = fileSize - headerSize
-        let duration = Double(dataSize / 4) / 48000.0
+        let duration = Double(dataSize) / 4.0 / 48000.0
 
         guard duration > 0 else { return [] }
         return [WhisperSegmentOutput(

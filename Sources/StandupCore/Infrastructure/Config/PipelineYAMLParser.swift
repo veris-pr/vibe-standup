@@ -35,8 +35,8 @@ public enum PipelineYAMLParser {
         var micRefs: [PluginRef] = []
         var systemRefs: [PluginRef] = []
         if let live = doc["live"] as? [String: Any] {
-            micRefs = parseLiveRefs(live["mic"])
-            systemRefs = parseLiveRefs(live["system"])
+            micRefs = try parseLiveRefs(live["mic"])
+            systemRefs = try parseLiveRefs(live["system"])
         }
 
         var stages: [StageDefinition] = []
@@ -75,10 +75,12 @@ public enum PipelineYAMLParser {
 
     // MARK: - Helpers
 
-    private static func parseLiveRefs(_ value: Any?) -> [PluginRef] {
+    private static func parseLiveRefs(_ value: Any?) throws -> [PluginRef] {
         guard let list = value as? [[String: Any]] else { return [] }
-        return list.map { item in
-            let pluginId = item["plugin"] as? String ?? "unknown"
+        return try list.map { item in
+            guard let pluginId = item["plugin"] as? String else {
+                throw PipelineError.missingField("live[].plugin")
+            }
             let config = flattenConfig(item["config"])
             return PluginRef(pluginId: pluginId, config: config)
         }

@@ -72,7 +72,7 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
             scStream = nil
         }
 
-        writerTask?.cancel()
+        await writerTask?.value
         writerTask = nil
     }
 

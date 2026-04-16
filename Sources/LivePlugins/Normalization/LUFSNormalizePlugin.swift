@@ -22,6 +22,8 @@ public final class LUFSNormalizePlugin: BaseLivePlugin, @unchecked Sendable {
     }
 
     override public func process(buffer: UnsafeMutablePointer<Float>, frameCount: Int, channel: AudioChannel) -> LivePluginResult {
+        guard frameCount > 0 else { return .passthrough }
+
         var sumSquares: Float = 0
         for i in 0..<frameCount {
             let s = buffer[i]
@@ -37,9 +39,8 @@ public final class LUFSNormalizePlugin: BaseLivePlugin, @unchecked Sendable {
 
         for i in 0..<frameCount {
             buffer[i] *= currentGain
-            if buffer[i] > 1.0 || buffer[i] < -1.0 {
-                buffer[i] = Float(Foundation.tanh(Double(buffer[i])))
-            }
+            // Soft-clip via tanh — applied always to avoid amplitude discontinuity
+            buffer[i] = Float(Foundation.tanh(Double(buffer[i])))
         }
         return .modified
     }

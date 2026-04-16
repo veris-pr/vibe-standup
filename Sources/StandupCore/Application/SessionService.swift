@@ -11,6 +11,7 @@ public final class SessionService: @unchecked Sendable {
     private let repository: SessionRepository
     private var activeSession: Session?
     private var captureEngine: AudioCapturePort?
+    private var activeLiveChains: (mic: LivePluginChain, system: LivePluginChain)?
 
     public init(config: StandupConfig, repository: SessionRepository) {
         self.config = config
@@ -39,8 +40,6 @@ public final class SessionService: @unchecked Sendable {
             captureSource: captureSource,
             directoryPath: sessionDir
         )
-        try repository.save(session)
-
         let engine = AudioCaptureFactory.create(
             source: captureSource,
             sessionDirectory: sessionDir,
@@ -48,9 +47,20 @@ public final class SessionService: @unchecked Sendable {
             systemChain: systemChain,
             virtualDeviceName: virtualDeviceName
         )
-        try await engine.start()
+
+        do {
+            try await engine.start()
+        } catch {
+            // Clean up directory and don't leave orphan in DB
+            try? FileManager.default.removeItem(atPath: sessionDir)
+            throw error
+        }
+
+        // Persist only after engine starts successfully
+        try repository.save(session)
 
         self.captureEngine = engine
+        self.activeLiveChains = (micChain, systemChain)
         self.activeSession = session
         return session
     }
@@ -63,6 +73,9 @@ public final class SessionService: @unchecked Sendable {
 
         await captureEngine?.stop()
         captureEngine = nil
+
+        // Release live plugin chains (triggers ARC cleanup)
+        activeLiveChains = nil
 
         try session.markProcessing()
         try repository.update(session)

@@ -29,6 +29,8 @@ public final class NoiseGatePlugin: BaseLivePlugin, @unchecked Sendable {
     }
 
     override public func process(buffer: UnsafeMutablePointer<Float>, frameCount: Int, channel: AudioChannel) -> LivePluginResult {
+        guard frameCount > 0 else { return .passthrough }
+
         var sumSquares: Float = 0
         for i in 0..<frameCount {
             let s = buffer[i]
@@ -41,7 +43,7 @@ public final class NoiseGatePlugin: BaseLivePlugin, @unchecked Sendable {
             return .passthrough
         }
         if holdCounter > 0 {
-            holdCounter -= frameCount
+            holdCounter = max(0, holdCounter - frameCount)
             return .passthrough
         }
         return .mute

@@ -1,6 +1,7 @@
-/// Lock-free single-producer single-consumer ring buffer for audio data.
+/// Single-producer single-consumer ring buffer for audio data.
 ///
 /// The audio thread writes, the writer thread reads.
+/// Uses lightweight locks for memory ordering between threads.
 /// Sized as power-of-2 for fast index masking.
 
 import Foundation
@@ -81,21 +82,17 @@ public final class RingBuffer: @unchecked Sendable {
 /// Uses `OSAllocatedUnfairLock` for proper memory ordering between
 /// the producer and consumer threads.
 private final class SPSCCounter: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock(initialState: 0)
-    private let _value: UnsafeMutablePointer<Int>
+    private let lock: OSAllocatedUnfairLock<Int>
 
     init(_ initial: Int) {
-        _value = .allocate(capacity: 1)
-        _value.initialize(to: initial)
+        lock = OSAllocatedUnfairLock(initialState: initial)
     }
 
-    deinit { _value.deallocate() }
-
     func load() -> Int {
-        lock.withLock { _ in _value.pointee }
+        lock.withLock { $0 }
     }
 
     func store(_ value: Int) {
-        lock.withLock { _ in _value.pointee = value }
+        lock.withLock { $0 = value }
     }
 }

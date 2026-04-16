@@ -496,13 +496,19 @@ struct StartCommand: AsyncParsableCommand {
 
             try session.id.write(toFile: config.activeSessionFile, atomically: true, encoding: .utf8)
 
+            // Write PID so `standup stop` can signal this process
+            let pidFile = config.activeSessionFile + ".pid"
+            try "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: pidFile, atomically: true, encoding: .utf8)
+
             let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
             signal(SIGINT, SIG_IGN)
             sigSource.setEventHandler {
                 sigSource.cancel()
                 Task {
+                    var sessionId: String?
                     do {
                         let stopped = try await sessionService.stopSession()
+                        sessionId = stopped.id
                         print("\n■ Session \(stopped.id) stopped")
 
                         // Count chunks
@@ -543,10 +549,13 @@ struct StartCommand: AsyncParsableCommand {
                         }
                     } catch {
                         print("\n✗ Error during pipeline: \(error.localizedDescription)")
-                        try? sessionService.markFailed(sessionId: config.activeSessionFile)
+                        if let id = sessionId {
+                            try? sessionService.markFailed(sessionId: id)
+                        }
                     }
 
                     try? FileManager.default.removeItem(atPath: config.activeSessionFile)
+                    try? FileManager.default.removeItem(atPath: config.activeSessionFile + ".pid")
                     Foundation.exit(0)
                 }
             }
@@ -594,8 +603,19 @@ struct StopCommand: AsyncParsableCommand {
             return
         }
         let sessionId = try String(contentsOfFile: config.activeSessionFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        print("■ Requesting stop for session \(sessionId)")
-        try FileManager.default.removeItem(atPath: config.activeSessionFile)
+
+        // Send SIGINT to the capture process so it stops gracefully
+        let pidFile = config.activeSessionFile + ".pid"
+        if let pidStr = try? String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           let pid = Int32(pidStr) {
+            print("■ Sending stop signal to session \(sessionId) (pid \(pid))")
+            kill(pid, SIGINT)
+        } else {
+            // Fallback: just clean up the sentinel file
+            print("■ Cleaning up session \(sessionId) (capture process not found)")
+            try FileManager.default.removeItem(atPath: config.activeSessionFile)
+            try? FileManager.default.removeItem(atPath: pidFile)
+        }
     }
 }
 

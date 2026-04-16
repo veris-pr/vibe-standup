@@ -87,7 +87,7 @@ public final class VirtualDeviceCaptureEngine: AudioCapturePort, @unchecked Send
         systemEngine?.inputNode.removeTap(onBus: 0)
         systemEngine = nil
 
-        writerTask?.cancel()
+        await writerTask?.value
         writerTask = nil
     }
 

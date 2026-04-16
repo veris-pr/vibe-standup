@@ -17,9 +17,7 @@ public final class WienerNoisePlugin: BaseLivePlugin, @unchecked Sendable {
     /// Frame size: 480 samples = 10ms at 48kHz
     static let frameSize = 480
 
-    // Pre-allocated buffers
-    private var inputFrame: UnsafeMutablePointer<Float>?
-    private var outputFrame: UnsafeMutablePointer<Float>?
+    // Pre-allocated buffer
     private var noiseEstimate: UnsafeMutablePointer<Float>?
 
     // Parameters
@@ -30,8 +28,6 @@ public final class WienerNoisePlugin: BaseLivePlugin, @unchecked Sendable {
     // Internal state
     private var isNoiseProfiled = false
     private var profileFramesRemaining: Int = 0
-    private var overlapBuffer: UnsafeMutablePointer<Float>?
-    private var overlapCount: Int = 0
 
     public init() {
         super.init(id: "wiener-noise")
@@ -47,26 +43,13 @@ public final class WienerNoisePlugin: BaseLivePlugin, @unchecked Sendable {
 
     override public func prepareBuffers(maxFrameCount: Int) {
         let size = max(maxFrameCount, Self.frameSize)
-        inputFrame = .allocate(capacity: size)
-        inputFrame?.initialize(repeating: 0, count: size)
-        outputFrame = .allocate(capacity: size)
-        outputFrame?.initialize(repeating: 0, count: size)
         noiseEstimate = .allocate(capacity: size)
         noiseEstimate?.initialize(repeating: 0, count: size)
-        overlapBuffer = .allocate(capacity: size)
-        overlapBuffer?.initialize(repeating: 0, count: size)
-        overlapCount = 0
     }
 
     override public func onTeardown() async {
-        inputFrame?.deallocate()
-        outputFrame?.deallocate()
         noiseEstimate?.deallocate()
-        overlapBuffer?.deallocate()
-        inputFrame = nil
-        outputFrame = nil
         noiseEstimate = nil
-        overlapBuffer = nil
     }
 
     override public func process(buffer: UnsafeMutablePointer<Float>, frameCount: Int, channel: AudioChannel) -> LivePluginResult {

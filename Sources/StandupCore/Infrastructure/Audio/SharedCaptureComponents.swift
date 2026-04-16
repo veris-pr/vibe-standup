@@ -20,7 +20,7 @@ final class ChunkWriter: @unchecked Sendable {
     private let systemRingBuffer: RingBuffer
     private let startTimestamp: TimeInterval
     private var chunkIndex = 0
-    private let _isRunning = OSAllocatedUnfairLock(initialState: true)
+    private let _isRunning = OSAllocatedUnfairLock(initialState: false)
 
     weak var delegate: AudioCaptureDelegate?
 
@@ -131,7 +131,10 @@ enum MicTapInstaller {
                 guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else { return }
 
                 var error: NSError?
+                var provided = false
                 converter.convert(to: converted, error: &error) { _, outStatus in
+                    if provided { outStatus.pointee = .noDataNow; return nil }
+                    provided = true
                     outStatus.pointee = .haveData
                     return buffer
                 }
