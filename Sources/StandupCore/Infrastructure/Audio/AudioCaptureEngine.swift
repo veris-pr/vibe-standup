@@ -1,39 +1,23 @@
-/// Audio capture engine — captures mic and system audio into separate channels.
+/// Infrastructure: Audio capture using AVAudioEngine (mic) + ScreenCaptureKit (system).
 ///
-/// Uses AVAudioEngine for microphone input and ScreenCaptureKit for system audio.
-/// Each channel runs through its live plugin chain before being written to the ring buffer.
+/// This is the adapter that implements the AudioCapturePort contract.
 
 import AVFAudio
 import Foundation
 import ScreenCaptureKit
 
-/// Delegate that receives audio chunks as they are captured.
-public protocol AudioCaptureDelegate: AnyObject, Sendable {
-    func audioCaptureDidWriteChunk(_ chunk: AudioChunkInfo)
-    func audioCaptureDidEncounterError(_ error: Error)
-}
-
-public final class AudioCaptureEngine: @unchecked Sendable {
-    // Audio format: mono Float32 at 48kHz
-    public static let sampleRate: Double = 48000
-    public static let bufferFrameSize: AVAudioFrameCount = 1024
+public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
+    public static let defaultFormat = AudioFormat.standard
 
     private let sessionDirectory: String
     private let micChain: LivePluginChain
     private let systemChain: LivePluginChain
-
-    // Ring buffers — one per channel
     private let micRingBuffer: RingBuffer
     private let systemRingBuffer: RingBuffer
 
-    // AVAudioEngine for mic input
     private var audioEngine: AVAudioEngine?
-
-    // ScreenCaptureKit for system audio
     private var scStream: SCStream?
     private var streamDelegate: SystemAudioStreamDelegate?
-
-    // Writer state
     private var writerTask: Task<Void, Never>?
     private var isRunning = false
     private var chunkIndex = 0
@@ -42,8 +26,7 @@ public final class AudioCaptureEngine: @unchecked Sendable {
     public weak var delegate: AudioCaptureDelegate?
 
     public init(sessionDirectory: String, micChain: LivePluginChain, systemChain: LivePluginChain) {
-        // ~2 seconds of buffer at 48kHz
-        let bufferCapacity = Int(Self.sampleRate * 2)
+        let bufferCapacity = Int(Self.defaultFormat.sampleRate * 2)
         self.sessionDirectory = sessionDirectory
         self.micChain = micChain
         self.systemChain = systemChain
@@ -52,28 +35,20 @@ public final class AudioCaptureEngine: @unchecked Sendable {
         self.startTimestamp = ProcessInfo.processInfo.systemUptime
     }
 
-    // MARK: - Start / Stop
-
     public func start() async throws {
         guard !isRunning else { return }
         isRunning = true
 
-        // Prepare live plugin chains
-        let maxFrames = Int(Self.bufferFrameSize)
+        let maxFrames = 1024
         micChain.prepareAll(maxFrameCount: maxFrames)
         systemChain.prepareAll(maxFrameCount: maxFrames)
 
-        // Create chunks directory
         let chunksDir = (sessionDirectory as NSString).appendingPathComponent("chunks")
         try FileManager.default.createDirectory(atPath: chunksDir, withIntermediateDirectories: true)
 
-        // Start mic capture
         try startMicCapture()
-
-        // Start system audio capture
         try await startSystemAudioCapture()
 
-        // Start writer thread
         writerTask = Task.detached(priority: .utility) { [weak self] in
             await self?.writerLoop()
         }
@@ -81,45 +56,36 @@ public final class AudioCaptureEngine: @unchecked Sendable {
 
     public func stop() async {
         isRunning = false
-
-        // Stop mic
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine = nil
 
-        // Stop system audio
         if let stream = scStream {
             try? await stream.stopCapture()
             scStream = nil
         }
 
-        // Wait for writer to flush
         writerTask?.cancel()
         writerTask = nil
     }
 
-    // MARK: - Microphone Capture (AVAudioEngine)
+    // MARK: - Mic (AVAudioEngine)
 
     private func startMicCapture() throws {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let inputFormat = AVAudioFormat(
+        let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.sampleRate,
+            sampleRate: Self.defaultFormat.sampleRate,
             channels: 1,
             interleaved: false
         )!
 
-        inputNode.installTap(onBus: 0, bufferSize: Self.bufferFrameSize, format: inputFormat) {
-            [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self, self.isRunning else { return }
             guard let floatData = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
-
-            // Run live plugin chain on mic audio
             self.micChain.process(buffer: floatData, frameCount: frameCount)
-
-            // Write to ring buffer
             self.micRingBuffer.write(from: floatData, count: frameCount)
         }
 
@@ -128,7 +94,7 @@ public final class AudioCaptureEngine: @unchecked Sendable {
         self.audioEngine = engine
     }
 
-    // MARK: - System Audio Capture (ScreenCaptureKit)
+    // MARK: - System Audio (ScreenCaptureKit)
 
     private func startSystemAudioCapture() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -136,15 +102,12 @@ public final class AudioCaptureEngine: @unchecked Sendable {
         let config = SCStreamConfiguration()
         config.capturesAudio = true
         config.excludesCurrentProcessAudio = true
-        config.sampleRate = Int(Self.sampleRate)
+        config.sampleRate = Int(Self.defaultFormat.sampleRate)
         config.channelCount = 1
-
-        // We don't need video — just audio
         config.width = 2
         config.height = 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        // Use a display filter — we just want audio, but need a valid filter
         guard let display = content.displays.first else {
             throw AudioCaptureError.noDisplayFound
         }
@@ -152,9 +115,7 @@ public final class AudioCaptureEngine: @unchecked Sendable {
 
         let delegate = SystemAudioStreamDelegate { [weak self] buffer, frameCount in
             guard let self, self.isRunning else { return }
-            // Run live plugin chain on system audio
             self.systemChain.process(buffer: buffer, frameCount: frameCount)
-            // Write to ring buffer
             self.systemRingBuffer.write(from: buffer, count: frameCount)
         }
         self.streamDelegate = delegate
@@ -167,9 +128,8 @@ public final class AudioCaptureEngine: @unchecked Sendable {
 
     // MARK: - Writer Loop
 
-    /// Drains ring buffers to disk in 1-second chunks.
     private func writerLoop() async {
-        let chunkFrames = Int(Self.sampleRate) // 1 second per chunk
+        let chunkFrames = Int(Self.defaultFormat.sampleRate) // 1 second
         let micTemp = UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames)
         let sysTemp = UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames)
         defer {
@@ -178,21 +138,14 @@ public final class AudioCaptureEngine: @unchecked Sendable {
         }
 
         while isRunning || micRingBuffer.availableToRead > 0 || systemRingBuffer.availableToRead > 0 {
-            // Drain mic ring buffer
             let micRead = micRingBuffer.read(into: micTemp, count: chunkFrames)
-            if micRead > 0 {
-                writeChunk(from: micTemp, frameCount: micRead, channel: .mic)
-            }
+            if micRead > 0 { writeChunk(from: micTemp, frameCount: micRead, channel: .mic) }
 
-            // Drain system ring buffer
             let sysRead = systemRingBuffer.read(into: sysTemp, count: chunkFrames)
-            if sysRead > 0 {
-                writeChunk(from: sysTemp, frameCount: sysRead, channel: .system)
-            }
+            if sysRead > 0 { writeChunk(from: sysTemp, frameCount: sysRead, channel: .system) }
 
-            // Sleep briefly to batch writes (~100ms)
             if micRead == 0 && sysRead == 0 {
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
         }
     }
@@ -204,24 +157,23 @@ public final class AudioCaptureEngine: @unchecked Sendable {
 
         let filename = String(format: "%04d_%@.pcm", index, channel.rawValue)
         let path = (chunksDir as NSString).appendingPathComponent(filename)
-
         let data = Data(bytes: buffer, count: frameCount * MemoryLayout<Float>.size)
         try? data.write(to: URL(fileURLWithPath: path))
 
         let elapsed = ProcessInfo.processInfo.systemUptime - startTimestamp
-        let info = AudioChunkInfo(
+        let chunk = AudioChunk(
             index: index,
             channel: channel,
-            sampleRate: Self.sampleRate,
+            format: Self.defaultFormat,
             frameCount: frameCount,
             timestamp: elapsed,
             path: path
         )
-        delegate?.audioCaptureDidWriteChunk(info)
+        delegate?.didCaptureChunk(chunk)
     }
 }
 
-// MARK: - System Audio Stream Delegate
+// MARK: - ScreenCaptureKit Stream Output
 
 private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
     let handler: (UnsafeMutablePointer<Float>, Int) -> Void
@@ -231,8 +183,7 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchec
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio else { return }
-        guard let blockBuffer = sampleBuffer.dataBuffer else { return }
+        guard type == .audio, let blockBuffer = sampleBuffer.dataBuffer else { return }
         let length = CMBlockBufferGetDataLength(blockBuffer)
         let frameCount = length / MemoryLayout<Float>.size
         guard frameCount > 0 else { return }
@@ -242,7 +193,6 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchec
         guard status == kCMBlockBufferNoErr, let ptr = dataPointer else { return }
 
         ptr.withMemoryRebound(to: Float.self, capacity: frameCount) { floatPtr in
-            // Make a mutable copy for live plugins to process in-place
             let mutable = UnsafeMutablePointer<Float>.allocate(capacity: frameCount)
             mutable.update(from: floatPtr, count: frameCount)
             handler(mutable, frameCount)
@@ -253,7 +203,7 @@ private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchec
 
 // MARK: - Errors
 
-public enum AudioCaptureError: Error, LocalizedError {
+public enum AudioCaptureError: Error, LocalizedError, Sendable {
     case noDisplayFound
     case micPermissionDenied
     case screenCapturePermissionDenied
@@ -262,7 +212,7 @@ public enum AudioCaptureError: Error, LocalizedError {
         switch self {
         case .noDisplayFound: "No display found for system audio capture"
         case .micPermissionDenied: "Microphone permission denied"
-        case .screenCapturePermissionDenied: "Screen capture permission denied (needed for system audio)"
+        case .screenCapturePermissionDenied: "Screen capture permission denied"
         }
     }
 }

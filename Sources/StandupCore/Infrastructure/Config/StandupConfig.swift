@@ -1,6 +1,4 @@
-/// Configuration system — loads and provides app-wide settings.
-///
-/// Config file lives at ~/.standup/config.yaml
+/// Infrastructure: Configuration loading from YAML.
 
 import Foundation
 import Yams
@@ -9,12 +7,8 @@ public struct StandupConfig: Sendable {
     public let baseDirectory: String
     public let pipelinesDirectory: String
     public let pluginSearchPaths: [String]
-
-    // Audio settings
     public let sampleRate: Double
     public let bufferFrameSize: Int
-
-    // Performance budgets
     public let maxLivePluginLatencyMs: Double
     public let stageMaxParallel: Int
     public let stageMaxRSSMB: Int
@@ -47,12 +41,22 @@ public struct StandupConfig: Sendable {
         self.whisperModel = whisperModel
     }
 
-    /// Load config from the default YAML file, falling back to defaults.
+    public var dbPath: String {
+        (baseDirectory as NSString).appendingPathComponent("standup.db")
+    }
+
+    public var activeSessionFile: String {
+        (baseDirectory as NSString).appendingPathComponent("active_session")
+    }
+
+    public var sessionsDirectory: String {
+        (baseDirectory as NSString).appendingPathComponent("sessions")
+    }
+
     public static func load() -> StandupConfig {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let configPath = (home as NSString)
-            .appendingPathComponent(".standup")
-            .appending("/config.yaml")
+            .appendingPathComponent(".standup/config.yaml")
 
         guard FileManager.default.fileExists(atPath: configPath),
               let yaml = try? String(contentsOfFile: configPath, encoding: .utf8),
@@ -61,7 +65,6 @@ public struct StandupConfig: Sendable {
         }
 
         let perf = doc["performance"] as? [String: Any] ?? [:]
-
         return StandupConfig(
             baseDirectory: doc["base_directory"] as? String,
             pipelinesDirectory: doc["pipelines_directory"] as? String,
@@ -76,22 +79,16 @@ public struct StandupConfig: Sendable {
         )
     }
 
-    /// Write a default config file.
     public static func writeDefault(to path: String? = nil) throws {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let configPath = path ?? (home as NSString)
-            .appendingPathComponent(".standup")
-            .appending("/config.yaml")
-
+        let configPath = path ?? (home as NSString).appendingPathComponent(".standup/config.yaml")
         let dir = (configPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        let defaultYAML = """
+        let yaml = """
         # Standup configuration
         # base_directory: ~/.standup
         # pipelines_directory: ~/.standup/pipelines
-        # plugin_search_paths:
-        #   - ~/.standup/plugins
 
         performance:
           max_live_plugin_latency_ms: 10
@@ -100,6 +97,6 @@ public struct StandupConfig: Sendable {
           whisper_threads: 4
           whisper_model: base.en
         """
-        try defaultYAML.write(toFile: configPath, atomically: true, encoding: .utf8)
+        try yaml.write(toFile: configPath, atomically: true, encoding: .utf8)
     }
 }

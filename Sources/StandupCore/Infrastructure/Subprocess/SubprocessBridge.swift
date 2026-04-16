@@ -1,20 +1,15 @@
-/// Subprocess bridge — runs external programs as stage plugins.
-///
-/// Communicates via JSON over stdin/stdout. Supports any executable
-/// (Python, Node, Go, shell scripts, etc.)
+/// Infrastructure: Subprocess bridge for running external programs as stage plugins.
 
 import Foundation
 
-/// A stage plugin that delegates to an external subprocess.
-public final class SubprocessStagePlugin: StagePlugin, @unchecked Sendable {
-    public let id: String
-    public let version: String = "1.0.0"
-    public let inputArtifacts: [ArtifactType]
-    public let outputArtifacts: [ArtifactType]
-
+public final class SubprocessStagePlugin: BaseStagePlugin, @unchecked Sendable {
     private let executablePath: String
     private let arguments: [String]
-    private var config: PluginConfig = PluginConfig()
+    private let _inputArtifacts: [ArtifactType]
+    private let _outputArtifacts: [ArtifactType]
+
+    override public var inputArtifacts: [ArtifactType] { _inputArtifacts }
+    override public var outputArtifacts: [ArtifactType] { _outputArtifacts }
 
     public init(
         id: String,
@@ -23,29 +18,22 @@ public final class SubprocessStagePlugin: StagePlugin, @unchecked Sendable {
         inputArtifacts: [ArtifactType] = [.custom],
         outputArtifacts: [ArtifactType] = [.custom]
     ) {
-        self.id = id
         self.executablePath = executablePath
         self.arguments = arguments
-        self.inputArtifacts = inputArtifacts
-        self.outputArtifacts = outputArtifacts
+        self._inputArtifacts = inputArtifacts
+        self._outputArtifacts = outputArtifacts
+        super.init(id: id)
     }
 
-    public func setup(config: PluginConfig) async throws {
-        self.config = config
-    }
+    override public func execute(context: StageContext) async throws -> [Artifact] {
+        let outputDir = try ensureOutputDirectory(context: context)
 
-    public func teardown() async {}
-
-    public func execute(context: SessionContext) async throws -> [ArtifactRef] {
-        let outputDir = context.outputDirectory(for: id)
-
-        // Build the JSON message to send via stdin
         let inputMessage = SubprocessInput(
             command: "execute",
             sessionId: context.sessionId,
             sessionPath: context.sessionDirectory,
             outputPath: outputDir,
-            inputs: context.inputArtifacts.mapValues { $0.path },
+            inputs: context.inputArtifacts.mapValues(\.path),
             config: config.values
         )
 
@@ -53,7 +41,6 @@ public final class SubprocessStagePlugin: StagePlugin, @unchecked Sendable {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let inputData = try encoder.encode(inputMessage)
 
-        // Spawn the subprocess
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
@@ -67,12 +54,10 @@ public final class SubprocessStagePlugin: StagePlugin, @unchecked Sendable {
 
         try process.run()
 
-        // Send input and close stdin
         stdinPipe.fileHandleForWriting.write(inputData)
         stdinPipe.fileHandleForWriting.write(Data("\n".utf8))
         stdinPipe.fileHandleForWriting.closeFile()
 
-        // Wait for completion
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
@@ -81,14 +66,13 @@ public final class SubprocessStagePlugin: StagePlugin, @unchecked Sendable {
             throw SubprocessError.nonZeroExit(id, Int(process.terminationStatus), errorMsg)
         }
 
-        // Parse stdout for output message
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let output = try decoder.decode(SubprocessOutput.self, from: stdoutData)
 
         return output.artifacts.map { art in
-            ArtifactRef(
+            Artifact(
                 stageId: id,
                 type: ArtifactType(rawValue: art.type) ?? .custom,
                 path: art.path
@@ -118,18 +102,13 @@ struct SubprocessArtifact: Codable {
     let path: String
 }
 
-// MARK: - Errors
-
-public enum SubprocessError: Error, LocalizedError {
+public enum SubprocessError: Error, LocalizedError, Sendable {
     case nonZeroExit(String, Int, String)
-    case invalidOutput(String)
 
     public var errorDescription: String? {
         switch self {
         case .nonZeroExit(let id, let code, let msg):
             "Subprocess plugin '\(id)' exited with code \(code): \(msg)"
-        case .invalidOutput(let id):
-            "Subprocess plugin '\(id)' produced invalid output"
         }
     }
 }
