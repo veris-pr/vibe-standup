@@ -124,7 +124,10 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
                 }
                 allSamples.append(mixed.withUnsafeBufferPointer { Data(buffer: $0) })
             } else if let data = micData ?? sysData {
-                allSamples.append(data)
+                // Single channel: apply same 0.5 gain as mixed path for consistent volume
+                let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                var scaled = samples.map { $0 * 0.5 }
+                allSamples.append(scaled.withUnsafeBufferPointer { Data(buffer: $0) })
             }
         }
 
@@ -169,7 +172,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
             "--no-prints"
         ]
         let stderrPipe = Pipe()
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = stderrPipe
 
         try process.run()

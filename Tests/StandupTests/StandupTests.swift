@@ -470,7 +470,8 @@ private struct AnyDecodable: Decodable {
     try await pipelineService.executeStages(definition: definition, session: session)
 
     // --- Verify Stage 1: Transcription ---
-    let transcribeDir = (sessionDir as NSString).appendingPathComponent("whisper")
+    // Output dir is now scoped by stage.id ("transcribe"), not plugin.id ("whisper")
+    let transcribeDir = (sessionDir as NSString).appendingPathComponent("transcribe")
     let segmentsPath = (transcribeDir as NSString).appendingPathComponent("segments.json")
     #expect(fm.fileExists(atPath: segmentsPath), "Whisper segments.json should exist")
     let segmentsData = try Data(contentsOf: URL(fileURLWithPath: segmentsPath))
@@ -479,7 +480,7 @@ private struct AnyDecodable: Decodable {
     let hasTranscription = segments.count >= 1
 
     // --- Verify Stage 2: Diarization ---
-    let diarizeDir = (sessionDir as NSString).appendingPathComponent("channel-diarizer")
+    let diarizeDir = (sessionDir as NSString).appendingPathComponent("diarize")
     let speakersPath = (diarizeDir as NSString).appendingPathComponent("speakers.json")
     #expect(fm.fileExists(atPath: speakersPath), "Diarization speakers.json should exist")
     let speakersData = try Data(contentsOf: URL(fileURLWithPath: speakersPath))
@@ -492,7 +493,7 @@ private struct AnyDecodable: Decodable {
     #expect(speakerTypes.contains("them"), "Should detect 'them' (system) speaker")
 
     // --- Verify Stage 3: Transcript Merger ---
-    let mergerDir = (sessionDir as NSString).appendingPathComponent("transcript-merger")
+    let mergerDir = (sessionDir as NSString).appendingPathComponent("clean-transcript")
     let transcriptPath = (mergerDir as NSString).appendingPathComponent("transcript.json")
     #expect(fm.fileExists(atPath: transcriptPath), "Merged transcript.json should exist")
     let transcriptData = try Data(contentsOf: URL(fileURLWithPath: transcriptPath))
@@ -507,7 +508,7 @@ private struct AnyDecodable: Decodable {
     }
 
     // --- Verify Stage 4: Comic Formatter ---
-    let formatterDir = (sessionDir as NSString).appendingPathComponent("comic-formatter")
+    let formatterDir = (sessionDir as NSString).appendingPathComponent("comic-format")
     let panelsPath = (formatterDir as NSString).appendingPathComponent("panels.json")
     #expect(fm.fileExists(atPath: panelsPath), "Comic panels.json should exist")
     let panelsData = try Data(contentsOf: URL(fileURLWithPath: panelsPath))
@@ -524,7 +525,7 @@ private struct AnyDecodable: Decodable {
     }
 
     // --- Verify Stage 5: Comic Renderer ---
-    let rendererDir = (sessionDir as NSString).appendingPathComponent("comic-renderer")
+    let rendererDir = (sessionDir as NSString).appendingPathComponent("comic-render")
     let comicPath = (rendererDir as NSString).appendingPathComponent("comic.html")
     #expect(fm.fileExists(atPath: comicPath), "Comic HTML should exist")
     let html = try String(contentsOfFile: comicPath, encoding: .utf8)

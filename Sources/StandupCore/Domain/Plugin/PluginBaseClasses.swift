@@ -99,6 +99,8 @@ open class BaseStagePlugin: StagePlugin, @unchecked Sendable {
     }
 
     /// Helper: ensures the output directory exists and returns its path.
+    /// Uses stageId from context (scoped per-stage) so two stages with the same
+    /// plugin don't collide. Falls back to plugin id when stageId isn't set.
     public func ensureOutputDirectory(context: StageContext) throws -> String {
         let dir = context.outputDirectory(for: id)
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

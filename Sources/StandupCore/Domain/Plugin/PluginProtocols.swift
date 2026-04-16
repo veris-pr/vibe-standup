@@ -70,18 +70,21 @@ public protocol LivePlugin: Plugin {
 public struct StageContext: Sendable {
     public let sessionId: String
     public let sessionDirectory: String
+    public let stageId: String
     public let inputArtifacts: [String: Artifact]
     public let config: PluginConfig
 
-    public init(sessionId: String, sessionDirectory: String, inputArtifacts: [String: Artifact], config: PluginConfig) {
+    public init(sessionId: String, sessionDirectory: String, stageId: String = "", inputArtifacts: [String: Artifact], config: PluginConfig) {
         self.sessionId = sessionId
         self.sessionDirectory = sessionDirectory
+        self.stageId = stageId
         self.inputArtifacts = inputArtifacts
         self.config = config
     }
 
-    public func outputDirectory(for stageId: String) -> String {
-        (sessionDirectory as NSString).appendingPathComponent(stageId)
+    public func outputDirectory(for fallbackId: String) -> String {
+        let dirName = stageId.isEmpty ? fallbackId : stageId
+        return (sessionDirectory as NSString).appendingPathComponent(dirName)
     }
 }
 

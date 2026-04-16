@@ -330,8 +330,9 @@ struct InitCommand: AsyncParsableCommand {
         process.standardOutput = pipe
         process.standardError = Pipe()
         try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func runProcess(_ path: String, args: [String]) async throws -> (Int32, String) {
@@ -342,8 +343,9 @@ struct InitCommand: AsyncParsableCommand {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let output = String(data: data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output)
     }
 

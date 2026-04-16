@@ -79,12 +79,10 @@ public final class PipelineService: @unchecked Sendable {
             let context = StageContext(
                 sessionId: session.id,
                 sessionDirectory: session.directoryPath,
+                stageId: stage.id,
                 inputArtifacts: stageInputs,
                 config: pluginConfig
             )
-
-            let outputDir = context.outputDirectory(for: stage.id)
-            try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
 
             do {
                 try await plugin.setup(config: pluginConfig)
