@@ -1,0 +1,45 @@
+# Meeting Todos Pipeline
+# Captures meeting audio, transcribes, diarizes, and extracts action items.
+
+name: meeting-todos
+description: Extract action items and reminders from meetings
+
+live:
+  mic:
+    - plugin: noise-gate
+      config:
+        threshold_db: "-40"
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+  system:
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+
+stages:
+  - id: transcribe
+    plugin: whisper
+    input: audio_chunks
+    config:
+      model: base.en
+      language: en
+
+  - id: diarize
+    plugin: channel-diarizer
+    input: audio_chunks
+
+  - id: clean-transcript
+    plugin: transcript-merger
+    inputs:
+      - transcribe.output
+      - diarize.output
+
+  # These would be custom plugins (subprocess or Swift):
+  - id: extract-actions
+    plugin: action-extractor
+    input: clean-transcript.output
+
+  - id: push-todos
+    plugin: todo-pusher
+    input: extract-actions.output

@@ -1,0 +1,47 @@
+# Standup Comics Pipeline
+# Captures meeting audio, transcribes, diarizes, and generates comic panels.
+
+name: standup-comics
+description: Generate comics from standup meetings
+
+# Live plugins: audio filter chains active during capture
+live:
+  mic:
+    - plugin: noise-gate
+      config:
+        threshold_db: "-40"
+        hold_ms: "100"
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+  system:
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+
+# Stage plugins: post-session processing DAG
+stages:
+  - id: transcribe
+    plugin: whisper
+    input: audio_chunks
+    config:
+      model: base.en
+      language: en
+
+  - id: diarize
+    plugin: channel-diarizer
+    input: audio_chunks
+
+  - id: clean-transcript
+    plugin: transcript-merger
+    inputs:
+      - transcribe.output
+      - diarize.output
+
+  - id: comic-formatter
+    plugin: comic-formatter
+    input: clean-transcript.output
+
+  - id: comic-renderer
+    plugin: comic-renderer
+    input: comic-formatter.output
