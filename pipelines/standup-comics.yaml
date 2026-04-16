@@ -1,14 +1,8 @@
 # Standup Comics Pipeline
-# Captures meeting audio, transcribes, diarizes, and generates comic panels.
+# Captures meeting audio, transcribes, diarizes, and generates superhero comic panels.
 
 name: standup-comics
-description: Generate comics from standup meetings
-
-# Audio capture source (optional — can be overridden with --capture CLI flag)
-# Options: screen-capture (default), virtual-device
-# capture:
-#   source: screen-capture
-#   virtual_device: "BlackHole 2ch"  # only used when source is virtual-device
+description: Generate superhero comics from standup meetings
 
 # Live plugins: audio filter chains active during capture
 live:
@@ -44,10 +38,24 @@ stages:
       - transcribe.output
       - diarize.output
 
-  - id: comic-formatter
-    plugin: comic-formatter
+  - id: comic-script
+    plugin: comic-script
     input: clean-transcript.output
+    config:
+      model: gemma3:4b
+      max_panels: "8"
 
-  - id: comic-renderer
+  - id: panel-render
+    plugin: image-gen
+    input: comic-script.output
+    config:
+      model: schnell
+      steps: "4"
+      width: "512"
+      height: "512"
+
+  - id: comic-assemble
     plugin: comic-renderer
-    input: comic-formatter.output
+    inputs:
+      - comic-script.output
+      - panel-render.output

@@ -325,13 +325,20 @@ private struct AnyDecodable: Decodable {
     try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(atPath: tmpDir) }
 
-    // Write mock panel data
-    let panels = [
-        ComicPanel(index: 0, speaker: "Alice", text: "Let's go!", mood: .excited, startTime: 0, duration: 2, importance: 0.8, panelSize: .large),
-        ComicPanel(index: 1, speaker: "Bob", text: "Fixed the bug!", mood: .proud, startTime: 2, duration: 3, importance: 0.7, panelSize: .normal),
-    ]
-    let panelsPath = (tmpDir as NSString).appendingPathComponent("panels.json")
-    try JSONEncoder().encode(panels).write(to: URL(fileURLWithPath: panelsPath))
+    // Write mock comic script
+    let script = ComicScript(
+        title: "Test Comic",
+        characters: [
+            ComicCharacter(speakerId: "me", heroName: "Captain Sprint", costume: "blue spandex", color: "#4A90D9"),
+            ComicCharacter(speakerId: "them", heroName: "The Deployer", costume: "red armor", color: "#D94A4A"),
+        ],
+        panels: [
+            ComicScriptPanel(index: 0, speaker: "me", heroName: "Captain Sprint", dialogue: "Let's go!", sceneDescription: "Hero stands ready", imagePrompt: "comic panel, superhero", mood: .excited),
+            ComicScriptPanel(index: 1, speaker: "them", heroName: "The Deployer", dialogue: "Fixed the bug!", sceneDescription: "Hero celebrates", imagePrompt: "comic panel, celebration", mood: .proud),
+        ]
+    )
+    let scriptPath = (tmpDir as NSString).appendingPathComponent("script.json")
+    try JSONEncoder().encode(script).write(to: URL(fileURLWithPath: scriptPath))
 
     let plugin = ComicRendererPlugin()
     try await plugin.setup(config: PluginConfig(values: ["title": "Test Comic"]))
@@ -339,7 +346,7 @@ private struct AnyDecodable: Decodable {
     let context = StageContext(
         sessionId: "test",
         sessionDirectory: tmpDir,
-        inputArtifacts: ["comic-formatter": Artifact(stageId: "formatter", type: .comicPanels, path: panelsPath)],
+        inputArtifacts: ["comic-script": Artifact(stageId: "script", type: .comicScript, path: scriptPath)],
         config: PluginConfig(values: ["title": "Test Comic"])
     )
 
@@ -349,10 +356,10 @@ private struct AnyDecodable: Decodable {
 
     let html = try String(contentsOfFile: artifacts[0].path, encoding: .utf8)
     #expect(html.contains("<!DOCTYPE html>"))
-    #expect(html.contains("Alice"))
-    #expect(html.contains("Bob"))
+    #expect(html.contains("Captain Sprint"))
+    #expect(html.contains("The Deployer"))
     #expect(html.contains("Test Comic"))
-    #expect(html.contains("Let&#39;s go!") || html.contains("Let's go!") || html.contains("Let&"))
+    #expect(html.contains("Cast"))
 }
 
 // MARK: - End-to-End Pipeline Integration Test
@@ -436,22 +443,25 @@ private struct AnyDecodable: Decodable {
           - transcribe.output
           - diarize.output
 
-      - id: comic-format
-        plugin: comic-formatter
+      - id: comic-script
+        plugin: comic-script
         input: clean-transcript.output
         config:
           max_panels: "8"
-          min_importance: "0.2"
 
-      - id: comic-render
+      - id: panel-render
+        plugin: image-gen
+        input: comic-script.output
+
+      - id: comic-assemble
         plugin: comic-renderer
-        input: comic-format.output
-        config:
-          title: "Daily Standup Comic"
+        inputs:
+          - comic-script.output
+          - panel-render.output
     """
 
     let definition = try PipelineService.parse(yaml: pipelineYAML)
-    #expect(definition.stages.count == 5)
+    #expect(definition.stages.count == 6)
 
     // --- Setup registry and pipeline service ---
     let registry = PluginRegistry()
@@ -507,40 +517,48 @@ private struct AnyDecodable: Decodable {
         }
     }
 
-    // --- Verify Stage 4: Comic Formatter ---
-    let formatterDir = (sessionDir as NSString).appendingPathComponent("comic-format")
-    let panelsPath = (formatterDir as NSString).appendingPathComponent("panels.json")
-    #expect(fm.fileExists(atPath: panelsPath), "Comic panels.json should exist")
-    let panelsData = try Data(contentsOf: URL(fileURLWithPath: panelsPath))
-    let panels = try JSONDecoder().decode([TestComicPanel].self, from: panelsData)
+    // --- Verify Stage 4: Comic Script ---
+    let scriptDir = (sessionDir as NSString).appendingPathComponent("comic-script")
+    let scriptPath = (scriptDir as NSString).appendingPathComponent("script.json")
+    #expect(fm.fileExists(atPath: scriptPath), "Comic script.json should exist")
+    let scriptData = try Data(contentsOf: URL(fileURLWithPath: scriptPath))
+    let script = try JSONDecoder().decode(TestComicScript.self, from: scriptData)
     if hasTranscription {
-        #expect(panels.count >= 1, "Should have at least 1 comic panel")
-        #expect(panels.count <= 8, "Should not exceed max_panels=8")
-        for panel in panels {
-            #expect(!panel.speaker.isEmpty)
-            #expect(!panel.text.isEmpty)
-            #expect(!panel.mood.isEmpty)
-            #expect(panel.importance >= 0 && panel.importance <= 1)
+        #expect(script.characters.count >= 1, "Should have at least 1 character")
+        #expect(script.panels.count >= 1, "Should have at least 1 panel")
+        #expect(script.panels.count <= 8, "Should not exceed max_panels=8")
+        for panel in script.panels {
+            #expect(!panel.heroName.isEmpty)
+            #expect(!panel.dialogue.isEmpty)
+            #expect(!panel.imagePrompt.isEmpty)
         }
     }
 
-    // --- Verify Stage 5: Comic Renderer ---
-    let rendererDir = (sessionDir as NSString).appendingPathComponent("comic-render")
-    let comicPath = (rendererDir as NSString).appendingPathComponent("comic.html")
+    // --- Verify Stage 5: Panel Images ---
+    let imagesDir = (sessionDir as NSString).appendingPathComponent("panel-render")
+    let manifestPath = (imagesDir as NSString).appendingPathComponent("manifest.json")
+    #expect(fm.fileExists(atPath: manifestPath), "Panel manifest.json should exist")
+
+    // --- Verify Stage 6: Comic Assembly ---
+    let assembleDir = (sessionDir as NSString).appendingPathComponent("comic-assemble")
+    let comicPath = (assembleDir as NSString).appendingPathComponent("comic.html")
     #expect(fm.fileExists(atPath: comicPath), "Comic HTML should exist")
     let html = try String(contentsOfFile: comicPath, encoding: .utf8)
 
-    // Structure checks — HTML is always generated even with 0 panels
+    // Structure checks
     #expect(html.contains("<!DOCTYPE html>"))
-    #expect(html.contains("Daily Standup Comic"))
     #expect(html.contains("comic-grid"))
     #expect(html.contains("Generated by Standup"))
+    if hasTranscription {
+        #expect(html.contains("Cast"), "Should have character legend")
+    }
 
     print("✓ End-to-end standup-comics pipeline completed successfully")
     print("  Transcription segments: \(segments.count)")
     print("  Speaker segments: \(speakers.count) (\(speakerTypes.sorted().joined(separator: ", ")))")
     print("  Dialogue lines: \(transcript.count)")
-    print("  Comic panels: \(panels.count)")
+    print("  Comic script panels: \(script.panels.count)")
+    print("  Characters: \(script.characters.map(\.heroName).joined(separator: ", "))")
     print("  HTML size: \(html.count) chars")
 }
 
@@ -564,14 +582,26 @@ private struct TestDialogueLine: Codable {
     let text: String
 }
 
-private struct TestComicPanel: Codable {
+private struct TestComicScript: Codable {
+    let title: String
+    let characters: [TestComicCharacter]
+    let panels: [TestComicScriptPanel]
+}
+
+private struct TestComicCharacter: Codable {
+    let speakerId: String
+    let heroName: String
+    let costume: String
+    let color: String
+}
+
+private struct TestComicScriptPanel: Codable {
     let index: Int
     let speaker: String
-    let text: String
+    let heroName: String
+    let dialogue: String
+    let sceneDescription: String
+    let imagePrompt: String
     let mood: String
-    let startTime: Double
-    let duration: Double
-    let importance: Double
-    let panelSize: String
 }
 

@@ -1,14 +1,15 @@
 /// Comic renderer stage plugin.
 ///
-/// Transforms comic panel definitions into an HTML/SVG comic strip.
-/// Outputs a self-contained HTML file with inline CSS and SVG.
+/// Assembles generated panel images and comic script into a self-contained HTML comic.
+/// Embeds images as base64 data URIs (or inline SVG) for portability.
+/// Falls back to text-only rendering if panel images aren't available.
 
 import Foundation
 import StandupCore
 
 public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
     // SAFETY: Inherits Sendable contract from BaseStagePlugin.
-    override public var inputArtifacts: [ArtifactType] { [.comicPanels] }
+    override public var inputArtifacts: [ArtifactType] { [.comicScript] }
     override public var outputArtifacts: [ArtifactType] { [.comicOutput] }
 
     private var title: String = "Standup Comic"
@@ -22,15 +23,26 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
     }
 
     override public func execute(context: StageContext) async throws -> [Artifact] {
-        guard let panelsRef = context.inputArtifacts.values.first(where: { $0.type == .comicPanels })
-                ?? context.inputArtifacts["comic-formatter"] else {
-            throw RenderError.missingInput("comic panels")
+        // Load comic script
+        guard let scriptRef = context.inputArtifacts.values.first(where: { $0.type == .comicScript })
+                ?? context.inputArtifacts["comic-script"] else {
+            throw RenderError.missingInput("comic script")
         }
 
-        let data = try Data(contentsOf: URL(fileURLWithPath: panelsRef.path))
-        let panels = try JSONDecoder().decode([ComicPanel].self, from: data)
+        let scriptData = try Data(contentsOf: URL(fileURLWithPath: scriptRef.path))
+        let script = try JSONDecoder().decode(ComicScript.self, from: scriptData)
 
-        let html = renderHTML(panels: panels)
+        // Load panel images if available
+        let imageDir: String?
+        if let imagesRef = context.inputArtifacts.values.first(where: { $0.type == .panelImages })
+            ?? context.inputArtifacts["panel-render"] {
+            // imagesRef.path points to manifest.json — images are in the same directory
+            imageDir = (imagesRef.path as NSString).deletingLastPathComponent
+        } else {
+            imageDir = nil
+        }
+
+        let html = renderHTML(script: script, imageDir: imageDir)
 
         let outputDir = try ensureOutputDirectory(context: context)
         let outputPath = (outputDir as NSString).appendingPathComponent("comic.html")
@@ -41,41 +53,41 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - HTML Rendering
 
-    private func renderHTML(panels: [ComicPanel]) -> String {
-        // Assign consistent colors to speakers
-        var speakerColors: [String: SpeakerStyle] = [:]
-        let palette: [SpeakerStyle] = [
-            SpeakerStyle(bg: "#4A90D9", text: "#FFFFFF", bubble: "#E8F0FE"),
-            SpeakerStyle(bg: "#D94A4A", text: "#FFFFFF", bubble: "#FEE8E8"),
-            SpeakerStyle(bg: "#4AD94A", text: "#FFFFFF", bubble: "#E8FEE8"),
-            SpeakerStyle(bg: "#D9D94A", text: "#333333", bubble: "#FEFEE8"),
-            SpeakerStyle(bg: "#9B59B6", text: "#FFFFFF", bubble: "#F0E8FE"),
-            SpeakerStyle(bg: "#E67E22", text: "#FFFFFF", bubble: "#FEF0E8"),
-        ]
-        var colorIndex = 0
-        for panel in panels {
-            if speakerColors[panel.speaker] == nil {
-                speakerColors[panel.speaker] = palette[colorIndex % palette.count]
-                colorIndex += 1
-            }
-        }
+    private func renderHTML(script: ComicScript, imageDir: String?) -> String {
+        let characterColors = Dictionary(uniqueKeysWithValues: script.characters.map {
+            ($0.heroName, $0.color)
+        })
 
-        let panelHTML = panels.map { panel -> String in
-            let style = speakerColors[panel.speaker] ?? palette[0]
+        let panelHTML = script.panels.map { panel -> String in
+            let color = characterColors[panel.heroName] ?? "#4A90D9"
             let moodEmoji = panel.mood.emoji
-            let sizeClass = panel.panelSize == .large ? "panel-large" : "panel-normal"
+            let imageContent = loadPanelImage(index: panel.index, imageDir: imageDir, fallbackColor: color)
 
             return """
-            <div class="panel \(sizeClass)">
-                <div class="panel-inner">
-                    <div class="speaker-badge" style="background: \(style.bg); color: \(style.text);">
-                        \(escapeHTML(panel.speaker)) \(moodEmoji)
-                    </div>
-                    <div class="speech-bubble" style="background: \(style.bubble);">
-                        <p>\(escapeHTML(panel.text))</p>
-                    </div>
-                    <div class="timestamp">\(formatTime(panel.startTime))</div>
+            <div class="panel">
+                <div class="panel-image">
+                    \(imageContent)
                 </div>
+                <div class="panel-overlay">
+                    <div class="speech-bubble">
+                        <p>"\(escapeHTML(panel.dialogue))"</p>
+                    </div>
+                    <div class="speaker-badge" style="background: \(color);">
+                        \(escapeHTML(panel.heroName)) \(moodEmoji)
+                    </div>
+                </div>
+            </div>
+            """
+        }.joined(separator: "\n")
+
+        // Character legend
+        let legendHTML = script.characters.map { char in
+            """
+            <div class="legend-item">
+                <span class="legend-dot" style="background: \(char.color);"></span>
+                <strong>\(escapeHTML(char.heroName))</strong>
+                <span class="legend-speaker">(\(escapeHTML(char.speakerId)))</span>
+                <span class="legend-costume">\(escapeHTML(char.costume))</span>
             </div>
             """
         }.joined(separator: "\n")
@@ -86,104 +98,187 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>\(escapeHTML(title))</title>
+            <title>\(escapeHTML(script.title))</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
                     font-family: 'Comic Sans MS', 'Chalkboard SE', 'Marker Felt', cursive, sans-serif;
-                    background: #F5F5F0;
+                    background: #1a1a2e;
+                    color: white;
                     padding: 20px;
                 }
                 h1 {
                     text-align: center;
-                    font-size: 2em;
-                    margin-bottom: 20px;
-                    color: #333;
-                    text-shadow: 2px 2px 0 #DDD;
+                    font-size: 2.2em;
+                    margin-bottom: 8px;
+                    color: #FFD700;
+                    text-shadow: 3px 3px 0 #333;
+                    letter-spacing: 2px;
+                }
+                .subtitle {
+                    text-align: center;
+                    color: #AAA;
+                    margin-bottom: 24px;
+                    font-size: 0.9em;
                 }
                 .comic-grid {
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                    gap: 12px;
-                    max-width: 900px;
-                    margin: 0 auto;
+                    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                    gap: 16px;
+                    max-width: 1100px;
+                    margin: 0 auto 30px;
                 }
                 .panel {
-                    border: 3px solid #333;
+                    position: relative;
+                    border: 4px solid #333;
                     border-radius: 8px;
-                    background: white;
                     overflow: hidden;
+                    background: white;
+                    aspect-ratio: 1;
                     transition: transform 0.2s;
                 }
-                .panel:hover { transform: scale(1.02); }
-                .panel-large { grid-column: span 2; }
-                .panel-inner { padding: 16px; }
-                .speaker-badge {
-                    display: inline-block;
-                    padding: 4px 12px;
-                    border-radius: 12px;
-                    font-size: 0.85em;
-                    font-weight: bold;
-                    margin-bottom: 8px;
+                .panel:hover { transform: scale(1.02); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+                .panel-image {
+                    width: 100%;
+                    height: 100%;
+                }
+                .panel-image img, .panel-image svg {
+                    width: 100%;
+                    height: 100%;
+                    object-fit: cover;
+                    display: block;
+                }
+                .panel-overlay {
+                    position: absolute;
+                    bottom: 0;
+                    left: 0;
+                    right: 0;
+                    padding: 12px;
                 }
                 .speech-bubble {
-                    border: 2px solid #333;
-                    border-radius: 12px;
-                    padding: 12px 16px;
-                    position: relative;
+                    background: rgba(255,255,255,0.95);
+                    border: 3px solid #333;
+                    border-radius: 16px;
+                    padding: 10px 14px;
                     margin-bottom: 8px;
+                    position: relative;
                 }
                 .speech-bubble::after {
                     content: '';
                     position: absolute;
-                    bottom: -10px;
-                    left: 20px;
-                    border-width: 10px 8px 0;
+                    top: -12px;
+                    left: 24px;
+                    border-width: 0 8px 12px;
                     border-style: solid;
-                    border-color: #333 transparent transparent;
+                    border-color: transparent transparent #333;
                 }
                 .speech-bubble p {
-                    font-size: 1.05em;
-                    line-height: 1.4;
+                    font-size: 1em;
                     color: #333;
+                    font-weight: bold;
+                    line-height: 1.3;
                 }
-                .timestamp {
-                    font-size: 0.7em;
-                    color: #999;
-                    text-align: right;
+                .speaker-badge {
+                    display: inline-block;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 0.8em;
+                    font-weight: bold;
+                    color: white;
+                    border: 2px solid #333;
                 }
+                .legend {
+                    max-width: 1100px;
+                    margin: 0 auto 20px;
+                    background: #16213e;
+                    border-radius: 12px;
+                    padding: 16px 20px;
+                }
+                .legend h2 {
+                    font-size: 1.1em;
+                    color: #FFD700;
+                    margin-bottom: 10px;
+                }
+                .legend-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-bottom: 6px;
+                    font-size: 0.9em;
+                }
+                .legend-dot {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 50%;
+                    border: 2px solid #333;
+                    flex-shrink: 0;
+                }
+                .legend-speaker { color: #888; }
+                .legend-costume { color: #AAA; font-style: italic; }
                 .footer {
                     text-align: center;
                     margin-top: 20px;
-                    color: #AAA;
+                    color: #555;
                     font-size: 0.8em;
                 }
-                @media (max-width: 600px) {
-                    .panel-large { grid-column: span 1; }
+                @media (max-width: 700px) {
                     .comic-grid { grid-template-columns: 1fr; }
                 }
             </style>
         </head>
         <body>
-            <h1>📋 \(escapeHTML(title))</h1>
+            <h1>⚡ \(escapeHTML(script.title))</h1>
+            <p class="subtitle">\(script.panels.count) panels · \(script.characters.count) heroes</p>
+            <div class="legend">
+                <h2>🦸 Cast</h2>
+                \(legendHTML)
+            </div>
             <div class="comic-grid">
                 \(panelHTML)
             </div>
             <div class="footer">
-                Generated by Standup · \(panels.count) panels
+                Generated by Standup · Superhero Comic Edition
             </div>
         </body>
         </html>
         """
     }
 
-    // MARK: - Helpers
+    // MARK: - Image Loading
 
-    private func formatTime(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
+    private func loadPanelImage(index: Int, imageDir: String?, fallbackColor: String) -> String {
+        guard let dir = imageDir else {
+            return colorFallback(fallbackColor)
+        }
+
+        let pngPath = (dir as NSString).appendingPathComponent("panel_\(index).png")
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: pngPath) else {
+            return colorFallback(fallbackColor)
+        }
+
+        // Check if it's actually an SVG (placeholder fallback writes SVG to .png path)
+        if let data = fm.contents(atPath: pngPath),
+           let text = String(data: data, encoding: .utf8),
+           text.hasPrefix("<svg") {
+            return text
+        }
+
+        // Real PNG — embed as base64
+        if let data = fm.contents(atPath: pngPath) {
+            let base64 = data.base64EncodedString()
+            return "<img src=\"data:image/png;base64,\(base64)\" alt=\"Panel \(index)\">"
+        }
+
+        return colorFallback(fallbackColor)
     }
+
+    private func colorFallback(_ color: String) -> String {
+        "<div style=\"width:100%;height:100%;background:\(color);opacity:0.3;\"></div>"
+    }
+
+    // MARK: - Helpers
 
     private func escapeHTML(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
@@ -194,12 +289,6 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 }
 
 // MARK: - Types
-
-private struct SpeakerStyle {
-    let bg: String
-    let text: String
-    let bubble: String
-}
 
 private enum RenderError: Error, LocalizedError, Sendable {
     case missingInput(String)

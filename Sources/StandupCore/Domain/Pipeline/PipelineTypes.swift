@@ -80,6 +80,8 @@ public enum ArtifactType: String, Sendable, Codable {
     case diarizationLabels = "diarization_labels"
     case cleanTranscript = "clean_transcript"
     case comicPanels = "comic_panels"
+    case comicScript = "comic_script"
+    case panelImages = "panel_images"
     case comicOutput = "comic_output"
     case custom = "custom"
 }
@@ -184,6 +186,57 @@ public struct ComicPanel: Sendable, Codable {
         self.duration = duration
         self.importance = importance
         self.panelSize = panelSize
+    }
+}
+
+// MARK: - Comic Script Types (LLM-generated)
+
+/// A superhero character assigned to a speaker.
+public struct ComicCharacter: Sendable, Codable {
+    public let speakerId: String
+    public let heroName: String
+    public let costume: String
+    public let color: String
+
+    public init(speakerId: String, heroName: String, costume: String, color: String) {
+        self.speakerId = speakerId
+        self.heroName = heroName
+        self.costume = costume
+        self.color = color
+    }
+}
+
+/// A comic panel with scene description for image generation.
+public struct ComicScriptPanel: Sendable, Codable {
+    public let index: Int
+    public let speaker: String
+    public let heroName: String
+    public let dialogue: String
+    public let sceneDescription: String
+    public let imagePrompt: String
+    public let mood: Mood
+
+    public init(index: Int, speaker: String, heroName: String, dialogue: String, sceneDescription: String, imagePrompt: String, mood: Mood) {
+        self.index = index
+        self.speaker = speaker
+        self.heroName = heroName
+        self.dialogue = dialogue
+        self.sceneDescription = sceneDescription
+        self.imagePrompt = imagePrompt
+        self.mood = mood
+    }
+}
+
+/// Full comic script output from the LLM.
+public struct ComicScript: Sendable, Codable {
+    public let title: String
+    public let characters: [ComicCharacter]
+    public let panels: [ComicScriptPanel]
+
+    public init(title: String, characters: [ComicCharacter], panels: [ComicScriptPanel]) {
+        self.title = title
+        self.characters = characters
+        self.panels = panels
     }
 }
 

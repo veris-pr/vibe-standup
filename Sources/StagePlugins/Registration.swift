@@ -14,6 +14,8 @@ public enum StagePluginRegistration {
         registry.register(stage: TranscriptMergerPlugin())
         registry.register(stage: WhisperPlugin())
         registry.register(stage: ComicFormatterPlugin())
+        registry.register(stage: ComicScriptPlugin())
+        registry.register(stage: ImageGenPlugin())
         registry.register(stage: ComicRendererPlugin())
     }
 }
