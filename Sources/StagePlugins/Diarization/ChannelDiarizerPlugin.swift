@@ -140,7 +140,7 @@ struct DiarizationSegment: Codable {
     let speaker: String
 }
 
-// MARK: - JSON Encoder Helper
+// MARK: - JSON Encoder Helper (shared across stage plugins)
 
 extension JSONEncoder {
     static let prettyEncoding: JSONEncoder = {

@@ -12,6 +12,7 @@ public enum LivePluginRegistration {
         // Also register individual strategies directly for convenience
         registry.register(live: NoiseGatePlugin())
         registry.register(live: SpectralNoisePlugin())
+        registry.register(live: RNNoiseLivePlugin())
         registry.register(live: LUFSNormalizePlugin())
         registry.register(live: PeakNormalizePlugin())
     }
