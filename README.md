@@ -14,6 +14,7 @@
 Most meeting tools are cloud-first black boxes. Standup is the opposite:
 
 - **Local-first** — mlx-whisper, Ollama, and mflux run on your machine. Audio never leaves your computer.
+- **Cloud-ready** — Swap to AWS Bedrock or Google Cloud plugins in one YAML change. Same pipeline, different backend.
 - **Plugin-based** — Every processing step is a swappable plugin with a fixed contract.
 - **Pipeline-driven** — Define your workflow in YAML. Stages form a DAG with automatic dependency resolution.
 - **Dual-channel audio** — Mic and system audio captured separately, enabling true speaker diarization without ML.
@@ -66,6 +67,7 @@ A **Session** is the container that scopes everything. Audio capture starts when
 │  Infrastructure Layer         Sources/StandupCore/       │
 │  AVAudioEngine · ScreenCaptureKit · ChunkWriter          │
 │  SQLite persistence · YAML parser · Ollama HTTP client   │
+│  AWS CLI runner · Google Cloud REST client               │
 ├──────────────────────────────────────────────────────────┤
 │  Plugins                                                 │
 │  Sources/LivePlugins/    (real-time audio processing)    │
@@ -105,9 +107,18 @@ CLI
 
 ```swift
 // Sources/StagePlugins/Registration.swift
+// Local plugins
 registry.register(stage: "mlx-whisper") { MlxWhisperPlugin() }
 registry.register(stage: "transcript-cleaner") { TranscriptCleanerPlugin() }
 registry.register(stage: "comic-script") { ComicScriptPlugin() }
+
+// Cloud plugins (AWS Bedrock)
+registry.register(stage: "bedrock-transcribe") { BedrockTranscribePlugin() }
+registry.register(stage: "bedrock-llm") { BedrockLLMPlugin() }
+
+// Cloud plugins (Google Cloud)
+registry.register(stage: "google-stt") { GoogleSTTPlugin() }
+registry.register(stage: "google-llm") { GoogleLLMPlugin() }
 
 // Sources/LivePlugins/Registration.swift
 registry.register(live: "noise-gate") { NoiseGatePlugin() }
@@ -876,9 +887,9 @@ The bundled pipeline captures an engineering standup and turns it into a superhe
 
 ### Other Possible Pipelines
 
-The same architecture supports entirely different use cases:
+The same architecture supports entirely different use cases. Any plugin can be swapped between local and cloud — just change the plugin name in YAML.
 
-**Meeting action items:**
+**Meeting action items (local):**
 ```yaml
 stages:
   - id: transcribe
@@ -889,6 +900,25 @@ stages:
     input: audio_chunks
   - id: clean
     plugin: transcript-cleaner
+    inputs: [transcribe.output, diarize.output]
+  - id: actions
+    plugin: action-extractor     # Your custom plugin
+    input: clean.output
+```
+
+**Same pipeline, cloud backend:**
+```yaml
+stages:
+  - id: transcribe
+    plugin: google-stt           # Google Cloud Speech-to-Text
+    input: audio_chunks
+    config:
+      language: en-US
+  - id: diarize
+    plugin: channel-diarizer     # Still local — no cloud equivalent needed
+    input: audio_chunks
+  - id: clean
+    plugin: google-llm           # Gemini via Vertex AI
     inputs: [transcribe.output, diarize.output]
   - id: actions
     plugin: action-extractor     # Your custom plugin
@@ -966,10 +996,10 @@ swift run standup init
 
 `standup init` handles everything automatically:
 
-1. Sets up Python venv with `mlx-whisper` for Apple Silicon–native transcription
-2. Installs `ollama` via Homebrew, starts the service, and pulls LLM models
-3. Creates a Python venv at `~/.standup/venv/` and installs `mflux`
-4. Creates `~/.standup/` directory structure, copies pipelines, writes config
+1. Creates `~/.standup/` directory structure, copies pipelines, writes config
+2. Sets up Python venv with `mlx-whisper` for Apple Silicon–native transcription
+3. Installs `ollama` via Homebrew, starts the service, and pulls `gemma4`
+4. Creates a Python venv at `~/.standup/venv/` and installs `mflux` (FLUX.2 image gen)
 
 All steps are idempotent — safe to re-run. Use `--dry-run` to preview.
 
@@ -977,6 +1007,22 @@ All steps are idempotent — safe to re-run. Use `--dry-run` to preview.
 standup init --dry-run           # Preview without changes
 standup init --skip-model        # Skip mlx-whisper model download
 ```
+
+#### Optional: Cloud Plugins
+
+For AWS Bedrock or Google Cloud plugins, set up credentials:
+
+```bash
+# AWS
+brew install awscli && aws configure
+cp .env.example ~/.standup/.env   # set AWS_PROFILE, STANDUP_S3_BUCKET
+
+# Google Cloud
+brew install google-cloud-sdk && gcloud auth login
+echo "GOOGLE_CLOUD_PROJECT=my-project" >> ~/.standup/.env
+```
+
+Run `standup doctor` to verify everything:
 
 ### macOS Permissions
 
@@ -995,7 +1041,7 @@ On first capture, macOS prompts for:
 | `standup resume <id> [--reset]` | Resume a failed pipeline, or re-run from scratch |
 | `standup list` | List all sessions with status and duration |
 | `standup show <id>` | Session details and artifacts |
-| `standup cleanup --older-than <period>` | Clean session data (day/week/month), filter by status/io |
+| `standup cleanup --older-than <period>` | Clean session data (day/week/month), filter by `--status active\|processing\|complete\|failed\|all` |
 | `standup setup` | Lightweight directory/config setup only |
 
 See [CLI.md](CLI.md) for the full command reference.
@@ -1006,9 +1052,9 @@ See [CLI.md](CLI.md) for the full command reference.
 |---|---|---|
 | Language | Swift 6 (strict concurrency) | Native macOS performance, type safety |
 | Audio capture | AVAudioEngine + ScreenCaptureKit | macOS native, dual-channel |
-| Transcription | mlx-whisper (MLX framework) | Local, open-source, fast on Apple Silicon |
-| LLM | Ollama (gemma4) | Local inference, no API keys |
-| Image gen | mflux (FLUX.2-klein-4B) | Apache 2.0, MLX-optimized, pre-quantized |
+| Transcription | mlx-whisper / Amazon Transcribe / Google STT | Local or cloud, same pipeline contract |
+| LLM | Ollama (gemma4) / Claude Haiku / Gemini | Local or cloud, swappable per stage |
+| Image gen | mflux (FLUX.2) / Stability AI / Imagen | Local or cloud, per-panel fallback to SVG |
 | Persistence | SQLite (via SQLite.swift) | Lightweight, zero-config |
 | Config/Pipeline | YAML (via Yams) | Human-readable, git-friendly |
 | CLI | swift-argument-parser | Apple's official CLI framework |
