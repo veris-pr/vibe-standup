@@ -373,7 +373,7 @@ private struct WhisperJSONOffsets: Codable {
 
 // MARK: - Data helpers
 
-private extension Data {
+extension Data {
     mutating func appendLE(_ value: UInt16) {
         var v = value.littleEndian
         append(Data(bytes: &v, count: 2))
