@@ -32,10 +32,12 @@ stages:
     input: audio_chunks
 
   - id: clean-transcript
-    plugin: transcript-merger
+    plugin: transcript-cleaner
     inputs:
       - transcribe.output
       - diarize.output
+    config:
+      model: gemma4
 
   - id: comic-script
     plugin: comic-script

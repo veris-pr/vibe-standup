@@ -12,6 +12,7 @@ public enum StagePluginRegistration {
         registry.register(stage: "channel-diarizer") { ChannelDiarizerPlugin() }
         registry.register(stage: "energy-diarizer") { EnergyDiarizerPlugin() }
         registry.register(stage: "transcript-merger") { TranscriptMergerPlugin() }
+        registry.register(stage: "transcript-cleaner") { TranscriptCleanerPlugin() }
         registry.register(stage: "mlx-whisper") { MlxWhisperPlugin() }
         registry.register(stage: "comic-formatter") { ComicFormatterPlugin() }
         registry.register(stage: "comic-script") { ComicScriptPlugin() }
