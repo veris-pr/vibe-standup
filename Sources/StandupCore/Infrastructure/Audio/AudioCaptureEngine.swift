@@ -62,7 +62,8 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
     }
 
     public func stop() async {
-        chunkWriter.isRunning = false
+        // Stop audio sources first so no more data enters the ring buffers,
+        // then signal the writer to drain and exit.
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine = nil
@@ -72,6 +73,7 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
             scStream = nil
         }
 
+        chunkWriter.isRunning = false
         await writerTask?.value
         writerTask = nil
     }

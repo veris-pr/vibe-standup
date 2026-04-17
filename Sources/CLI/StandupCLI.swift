@@ -562,7 +562,16 @@ struct StartCommand: AsyncParsableCommand {
                             try await pipelineService.executeStages(definition: definition, session: stopped)
                             try sessionService.markComplete(sessionId: stopped.id)
 
-                            print("✓ Pipeline complete!")
+                            // Surface warnings from pipeline output
+                            let pipelineWarnings = Self.collectPipelineWarnings(sessionPath: stopped.directoryPath)
+                            if pipelineWarnings.isEmpty {
+                                print("✓ Pipeline complete!")
+                            } else {
+                                print("⚠ Pipeline complete with warnings:")
+                                for warning in pipelineWarnings {
+                                    print("  ⚠ \(warning)")
+                                }
+                            }
                             print("✓ Results in: \(stopped.directoryPath)")
 
                             // Show output artifacts
@@ -588,6 +597,9 @@ struct StartCommand: AsyncParsableCommand {
                         if let id = sessionId {
                             try? sessionService.markFailed(sessionId: id)
                         }
+                        try? FileManager.default.removeItem(atPath: config.activeSessionFile)
+                        try? FileManager.default.removeItem(atPath: config.activeSessionFile + ".pid")
+                        Foundation.exit(1)
                     }
 
                     try? FileManager.default.removeItem(atPath: config.activeSessionFile)
@@ -628,6 +640,38 @@ struct StartCommand: AsyncParsableCommand {
             }
             Foundation.exit(1)
         }
+    }
+
+    /// Check pipeline outputs for degraded results (empty transcripts, fallback images, etc.)
+    private static func collectPipelineWarnings(sessionPath: String) -> [String] {
+        var warnings: [String] = []
+        let fm = FileManager.default
+
+        // Check image-gen manifest for panel generation warnings
+        let manifestPath = ((sessionPath as NSString)
+            .appendingPathComponent("image-gen") as NSString)
+            .appendingPathComponent("manifest.json")
+        if let data = fm.contents(atPath: manifestPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let manifestWarnings = json["warnings"] as? [String], !manifestWarnings.isEmpty {
+            for w in manifestWarnings {
+                warnings.append(w)
+            }
+        }
+
+        // Check if transcript is empty or placeholder-only
+        let transcriptDir = (sessionPath as NSString).appendingPathComponent("transcribe")
+        if let files = try? fm.contentsOfDirectory(atPath: transcriptDir),
+           let jsonFile = files.first(where: { $0.hasSuffix(".json") }),
+           let data = fm.contents(atPath: (transcriptDir as NSString).appendingPathComponent(jsonFile)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let segments = json["segments"] as? [[String: Any]] {
+            if segments.isEmpty {
+                warnings.append("Transcription produced 0 segments — audio may be silent or whisper unavailable")
+            }
+        }
+
+        return warnings
     }
 }
 

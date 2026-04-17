@@ -60,6 +60,7 @@ public final class SessionService: @unchecked Sendable {
         try repository.save(session)
 
         self.captureEngine = engine
+        engine.delegate = self
         self.activeLiveChains = (micChain, systemChain)
         self.activeSession = session
         return session
@@ -109,4 +110,16 @@ public final class SessionService: @unchecked Sendable {
     }
 
     public var currentSession: Session? { activeSession }
+}
+
+// MARK: - AudioCaptureDelegate
+
+extension SessionService: AudioCaptureDelegate {
+    public func didCaptureChunk(_ chunk: AudioChunk) {
+        // Chunks are written to disk by ChunkWriter; nothing to do here.
+    }
+
+    public func didEncounterError(_ error: Error) {
+        print("⚠ Audio capture error: \(error.localizedDescription)")
+    }
 }

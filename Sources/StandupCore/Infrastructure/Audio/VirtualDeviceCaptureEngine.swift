@@ -77,8 +77,8 @@ public final class VirtualDeviceCaptureEngine: AudioCapturePort, @unchecked Send
     }
 
     public func stop() async {
-        chunkWriter.isRunning = false
-
+        // Stop audio sources first so no more data enters the ring buffers,
+        // then signal the writer to drain and exit.
         micEngine?.stop()
         micEngine?.inputNode.removeTap(onBus: 0)
         micEngine = nil
@@ -87,6 +87,7 @@ public final class VirtualDeviceCaptureEngine: AudioCapturePort, @unchecked Send
         systemEngine?.inputNode.removeTap(onBus: 0)
         systemEngine = nil
 
+        chunkWriter.isRunning = false
         await writerTask?.value
         writerTask = nil
     }
