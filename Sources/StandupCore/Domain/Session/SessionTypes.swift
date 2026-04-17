@@ -37,16 +37,16 @@ public struct Session: Sendable, Codable, Equatable {
 
     /// Transition to processing state (session stopped, pipeline running).
     public mutating func markProcessing() throws {
-        guard status == .active else {
+        guard status == .active || status == .failed else {
             throw SessionError.invalidTransition(from: status, to: .processing)
         }
         status = .processing
-        endTime = Date()
+        if endTime == nil { endTime = Date() }
     }
 
     /// Transition to complete state (pipeline finished successfully).
     public mutating func markComplete() throws {
-        guard status == .processing else {
+        guard status == .processing || status == .failed else {
             throw SessionError.invalidTransition(from: status, to: .complete)
         }
         status = .complete

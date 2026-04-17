@@ -48,12 +48,46 @@ public final class PipelineService: @unchecked Sendable {
 
     // MARK: - Stage Execution
 
-    /// Execute the post-session stage pipeline.
-    public func executeStages(definition: PipelineDefinition, session: Session) async throws {
+    /// Callback invoked as each stage transitions.
+    public typealias StageProgressCallback = (String, StageStatus) -> Void
+
+    /// Execute the post-session stage pipeline. Automatically resumes from the last
+    /// successful stage if a `pipeline-state.json` exists (unless reset).
+    public func executeStages(
+        definition: PipelineDefinition,
+        session: Session,
+        onProgress: StageProgressCallback? = nil
+    ) async throws {
         let ordered = topologicalSort(definition.stages)
+
+        // Load existing state or create fresh
+        var state = PipelineState.load(from: session.directoryPath)
+            ?? PipelineState(
+                pipelineName: definition.name,
+                stages: ordered.map { StageState(id: $0.id, status: .pending) }
+            )
+
+        // Build set of completed stage IDs and recover their artifacts
         var artifacts: [String: Artifact] = [:]
+        let doneIds = Set(state.stages.filter { $0.status == .done }.map(\.id))
+        for stageState in state.stages where stageState.status == .done {
+            if let artifact = stageState.artifact {
+                artifacts[stageState.id] = artifact
+            }
+        }
 
         for stage in ordered {
+            // Skip already-completed stages
+            if doneIds.contains(stage.id) {
+                onProgress?(stage.id, .done)
+                continue
+            }
+
+            // Mark running
+            updateStageStatus(&state, stageId: stage.id, status: .running)
+            try? state.save(to: session.directoryPath)
+            onProgress?(stage.id, .running)
+
             let pluginConfig = PluginConfig(values: stage.config)
             let plugin = try registry.resolveStagePlugin(id: stage.pluginId, config: pluginConfig)
 
@@ -89,15 +123,42 @@ public final class PipelineService: @unchecked Sendable {
                 let outputs = try await plugin.execute(context: context)
                 await plugin.teardown()
 
-                // Store all output artifacts, keyed as "stageId" for first, "stageId.N" for subsequent
+                // Store all output artifacts
+                let primaryArtifact = outputs.first
                 for (i, output) in outputs.enumerated() {
                     let key = i == 0 ? stage.id : "\(stage.id).\(i)"
                     artifacts[key] = output
                 }
+
+                // Persist done state with primary artifact
+                updateStageStatus(&state, stageId: stage.id, status: .done, artifact: primaryArtifact)
+                try? state.save(to: session.directoryPath)
+                onProgress?(stage.id, .done)
             } catch {
                 await plugin.teardown()
+                updateStageStatus(&state, stageId: stage.id, status: .failed, error: error.localizedDescription)
+                try? state.save(to: session.directoryPath)
+                onProgress?(stage.id, .failed)
                 throw PipelineError.stageExecutionFailed(stageId: stage.id, underlying: error)
             }
+        }
+    }
+
+    /// Reset pipeline state for a session — deletes state file and stage output directories.
+    public static func resetPipeline(session: Session, definition: PipelineDefinition) {
+        PipelineState.remove(from: session.directoryPath)
+        let fm = FileManager.default
+        for stage in definition.stages {
+            let stageDir = (session.directoryPath as NSString).appendingPathComponent(stage.id)
+            try? fm.removeItem(atPath: stageDir)
+        }
+    }
+
+    private func updateStageStatus(_ state: inout PipelineState, stageId: String, status: StageStatus, artifact: Artifact? = nil, error: String? = nil) {
+        if let idx = state.stages.firstIndex(where: { $0.id == stageId }) {
+            state.stages[idx].status = status
+            if let artifact { state.stages[idx].artifact = artifact }
+            if let error { state.stages[idx].error = error }
         }
     }
 

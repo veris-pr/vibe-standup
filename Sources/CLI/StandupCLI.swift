@@ -11,7 +11,7 @@ struct StandupCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "standup",
         abstract: "Audio capture and processing pipeline for meetings",
-        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ListCommand.self, ShowCommand.self, SetupCommand.self, DoctorCommand.self]
+        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ResumeCommand.self, ListCommand.self, ShowCommand.self, SetupCommand.self, DoctorCommand.self]
     )
 }
 
@@ -830,6 +830,96 @@ struct StopCommand: AsyncParsableCommand {
     }
 }
 
+// MARK: - Resume
+
+struct ResumeCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "resume",
+        abstract: "Resume a failed or interrupted pipeline",
+        discussion: "Re-runs the pipeline for a session, skipping stages that already completed. Use --reset to start the pipeline from scratch."
+    )
+
+    @Argument(help: "Session ID to resume")
+    var sessionId: String
+
+    @Option(name: .long, help: "Pipeline name (defaults to session's pipeline)")
+    var pipeline: String?
+
+    @Flag(name: .long, help: "Reset pipeline state and re-run all stages from scratch")
+    var reset: Bool = false
+
+    func run() async throws {
+        let (config, _, sessionService, pipelineService) = try buildServices()
+
+        guard let session = try sessionService.getSession(id: sessionId) else {
+            print("✗ Session not found: \(sessionId)")
+            throw ExitCode.failure
+        }
+
+        let pipelineName = pipeline ?? session.pipelineName
+        let pipelinePath = (config.pipelinesDirectory as NSString).appendingPathComponent("\(pipelineName).yaml")
+        guard FileManager.default.fileExists(atPath: pipelinePath) else {
+            print("✗ Pipeline not found: \(pipelinePath)")
+            throw ExitCode.failure
+        }
+
+        let definition = try PipelineService.load(from: pipelinePath)
+        guard !definition.stages.isEmpty else {
+            print("✗ Pipeline '\(pipelineName)' has no stages to run")
+            throw ExitCode.failure
+        }
+
+        if reset {
+            PipelineService.resetPipeline(session: session, definition: definition)
+            print("↺ Reset pipeline state for session \(sessionId)")
+        } else if let state = PipelineState.load(from: session.directoryPath) {
+            let done = state.stages.filter { $0.status == .done }.count
+            let total = state.stages.count
+            if done == total {
+                print("✓ All \(total) stages already complete for session \(sessionId)")
+                print("  Use --reset to re-run from scratch")
+                return
+            }
+            print("↻ Resuming pipeline '\(pipelineName)' for session \(sessionId) (\(done)/\(total) stages done)")
+        } else {
+            print("⚙ Running pipeline '\(pipelineName)' for session \(sessionId)")
+        }
+
+        // Transition session to processing state for resume
+        try? sessionService.markProcessing(sessionId: session.id)
+
+        print()
+        for (i, stage) in definition.stages.enumerated() {
+            print("  [\(i+1)/\(definition.stages.count)] \(stage.id) (\(stage.pluginId))")
+        }
+        print()
+
+        do {
+            try await pipelineService.executeStages(
+                definition: definition,
+                session: session,
+                onProgress: { stageId, status in
+                    switch status {
+                    case .done: print("  ✓ \(stageId)")
+                    case .running: print("  ▸ \(stageId)...", terminator: "")
+                    case .failed: print(" ✗")
+                    case .pending: break
+                    }
+                }
+            )
+
+            try sessionService.markComplete(sessionId: session.id)
+            print("\n✓ Pipeline complete!")
+            print("✓ Results in: \(session.directoryPath)")
+        } catch {
+            try? sessionService.markFailed(sessionId: session.id)
+            print("\n✗ Pipeline failed: \(error.localizedDescription)")
+            print("  Run `standup resume \(sessionId)` to retry from the failed stage")
+            throw ExitCode.failure
+        }
+    }
+}
+
 // MARK: - List
 
 struct ListCommand: AsyncParsableCommand {
@@ -882,6 +972,24 @@ struct ShowCommand: AsyncParsableCommand {
         print("Directory: \(session.directoryPath)")
 
         let fm = FileManager.default
+
+        // Show pipeline state if available
+        if let state = PipelineState.load(from: session.directoryPath) {
+            print("Pipeline stages:")
+            for s in state.stages {
+                let icon: String
+                switch s.status {
+                case .done: icon = "✓"
+                case .failed: icon = "✗"
+                case .running: icon = "▸"
+                case .pending: icon = "○"
+                }
+                var line = "  \(icon) \(s.id) (\(s.status.rawValue))"
+                if let err = s.error { line += " — \(err)" }
+                print(line)
+            }
+        }
+
         if let contents = try? fm.contentsOfDirectory(atPath: session.directoryPath) {
             let dirs = contents.filter { name in
                 var isDir: ObjCBool = false

@@ -101,6 +101,14 @@ public final class SessionService: @unchecked Sendable {
         try repository.update(session)
     }
 
+    public func markProcessing(sessionId: String) throws {
+        guard var session = try repository.find(id: sessionId) else {
+            throw SessionError.notFound(sessionId)
+        }
+        try session.markProcessing()
+        try repository.update(session)
+    }
+
     public func markFailed(sessionId: String) throws {
         guard var session = try repository.find(id: sessionId) else {
             throw SessionError.notFound(sessionId)

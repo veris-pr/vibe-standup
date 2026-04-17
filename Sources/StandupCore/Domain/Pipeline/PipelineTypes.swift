@@ -240,6 +240,62 @@ public struct ComicScript: Sendable, Codable {
     }
 }
 
+// MARK: - Pipeline State (persisted for resumability)
+
+/// Status of a single stage in a pipeline run.
+public enum StageStatus: String, Sendable, Codable {
+    case pending
+    case running
+    case done
+    case failed
+}
+
+/// Tracks per-stage progress so pipelines can resume after failures.
+public struct StageState: Sendable, Codable {
+    public let id: String
+    public var status: StageStatus
+    public var artifact: Artifact?
+    public var error: String?
+}
+
+/// Persisted pipeline progress — written to `pipeline-state.json` in the session directory.
+public struct PipelineState: Sendable, Codable {
+    public let pipelineName: String
+    public var stages: [StageState]
+
+    public init(pipelineName: String, stages: [StageState]) {
+        self.pipelineName = pipelineName
+        self.stages = stages
+    }
+
+    static let fileName = "pipeline-state.json"
+
+    public static func load(from sessionDirectory: String) -> PipelineState? {
+        let path = (sessionDirectory as NSString).appendingPathComponent(fileName)
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return try? JSONDecoder().decode(PipelineState.self, from: data)
+    }
+
+    public func save(to sessionDirectory: String) throws {
+        let path = (sessionDirectory as NSString).appendingPathComponent(Self.fileName)
+        let data = try JSONEncoder.prettyPipelineState.encode(self)
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+
+    public static func remove(from sessionDirectory: String) {
+        let path = (sessionDirectory as NSString).appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(atPath: path)
+    }
+}
+
+private extension JSONEncoder {
+    static let prettyPipelineState: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
+    }()
+}
+
 // MARK: - Pipeline Errors
 
 public enum PipelineError: Error, LocalizedError, Sendable {
