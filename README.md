@@ -13,45 +13,47 @@
 
 Most meeting tools are cloud-first black boxes. Standup is the opposite:
 
-- **Local-first** — Whisper.cpp runs on your machine. Audio never leaves your computer.
+- **Local-first** — Whisper.cpp, Ollama, and mflux run on your machine. Audio never leaves your computer.
 - **Plugin-based** — Every processing step is a swappable plugin with a fixed contract.
 - **Pipeline-driven** — Define your workflow in YAML. Stages form a DAG with automatic dependency resolution.
 - **Dual-channel audio** — Mic and system audio captured separately, enabling true speaker diarization without ML.
-- **Performance-conscious** — Lock-free ring buffer, zero-allocation audio path, <10ms live plugin budget.
+- **Graceful degradation** — Missing a dependency? Each stage falls back to placeholders so the pipeline always completes.
 
 ## How It Works
 
 ```
-┌─────────────────── Session ────────────────────┐
-│                                                 │
-│  🎤 Mic ──→ [NoiseGate → Normalize] ──→ Ring   │
-│                                         Buffer  │──→ PCM Chunks
-│  🔊 System ──→ [Normalize] ──────────→ Ring    │     on Disk
-│                                         Buffer  │
-│                                                 │
-│  ─── Live Plugins (real-time, <10ms) ────────  │
-└─────────────────────────────────────────────────┘
-                        │
-                   Session Stop
-                        │
-                        ▼
-┌─────────────── Stage Pipeline (DAG) ───────────┐
-│                                                 │
-│  audio_chunks ──→ Whisper (transcribe)          │
-│              ──→ ChannelDiarizer (who spoke)     │
-│                        │         │              │
-│                        ▼         ▼              │
-│              TranscriptMerger (align)           │
-│                        │                        │
-│                        ▼                        │
-│              ComicFormatter (NLP panels)        │
-│                        │                        │
-│                        ▼                        │
-│              ComicRenderer (HTML/SVG)           │
-│                                                 │
-└─────────────────────────────────────────────────┘
-                        │
-                        ▼
+┌──────────────────── Session ─────────────────────┐
+│                                                   │
+│  🎤 Mic ───→ [NoiseGate → Normalize] ──→ Chunks  │
+│                                                   │
+│  🔊 System ─→ [Normalize] ─────────────→ Chunks  │
+│                                                   │
+│  ─── Live Plugins (real-time, <10ms) ──────────  │
+└───────────────────────────────────────────────────┘
+                         │
+                    Session Stop
+                         │
+                         ▼
+┌────────────── Stage Pipeline (DAG) ──────────────┐
+│                                                   │
+│  audio_chunks ──→ Whisper (transcribe)            │
+│               ──→ ChannelDiarizer (who spoke)     │
+│                         │          │              │
+│                         ▼          ▼              │
+│              TranscriptMerger (align speakers)    │
+│                         │                         │
+│                         ▼                         │
+│              ComicScript (LLM via Ollama)         │
+│                         │                         │
+│                         ▼                         │
+│              ImageGen (mflux panel art)           │
+│                         │                         │
+│                         ▼                         │
+│              ComicRenderer (HTML assembly)        │
+│                                                   │
+└───────────────────────────────────────────────────┘
+                         │
+                         ▼
               ~/.standup/sessions/<id>/
               └── comic-renderer/comic.html
 ```
@@ -62,8 +64,11 @@ Most meeting tools are cloud-first black boxes. Standup is the opposite:
 # Build
 swift build
 
-# Initialize (installs whisper-cpp, downloads model, creates directories)
+# Initialize — installs all dependencies automatically
 swift run standup init
+
+# Check everything is healthy
+swift run standup doctor
 
 # Start a session with the standup-comics pipeline
 swift run standup start --pipeline standup-comics
@@ -84,8 +89,9 @@ open ~/.standup/sessions/<id>/comic-renderer/comic.html
 | Requirement | Minimum | Notes |
 |---|---|---|
 | macOS | 14 (Sonoma) | ScreenCaptureKit for system audio |
-| Swift | 5.9 | Xcode 15+ or CLI tools |
-| Homebrew | Any | For whisper-cpp install |
+| Swift | 5.9+ | Xcode 15+ or CLI tools |
+| Homebrew | Any | For dependency installation |
+| Python 3 | Any | For mflux venv (image generation) |
 
 ### Setup
 
@@ -96,19 +102,27 @@ swift build
 swift run standup init
 ```
 
-`standup init` handles everything: dependency installation, model download, directory creation, config writing. Use `--dry-run` to preview.
+`standup init` handles everything automatically:
+
+1. Installs `whisper-cpp` via Homebrew and downloads the GGML model
+2. Installs `ollama` via Homebrew, starts the service, and pulls `gemma3:4b`
+3. Creates a Python venv at `~/.standup/venv/` and installs `mflux`
+4. Creates `~/.standup/` directory structure, copies pipelines, writes config
+
+All steps are idempotent — safe to re-run. Use `--dry-run` to preview.
 
 ```bash
 standup init --dry-run           # Preview without changes
-standup init --model small.en    # Larger model (better accuracy, slower)
+standup init --model small.en    # Larger whisper model (better accuracy, slower)
 standup init --skip-brew         # Skip Homebrew installs
+standup init --skip-model        # Skip whisper model download
 ```
 
 ### macOS Permissions
 
 On first capture, macOS prompts for:
 - **Microphone** — your voice
-- **Screen Recording** — system audio (other participants)
+- **Screen Recording** — system audio (other participants via ScreenCaptureKit)
 
 ## Architecture
 
@@ -117,7 +131,7 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 ```
 ┌──────────────────────────────────────────────────┐
 │  CLI Layer              Sources/CLI/             │
-│  Argument parsing, user I/O                      │
+│  Argument parsing, user I/O, process management  │
 ├──────────────────────────────────────────────────┤
 │  Application Layer      Sources/StandupCore/     │
 │  SessionService · PipelineService                │
@@ -140,7 +154,8 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 |---|---|
 | **DDD with ports/adapters** | Domain contracts are stable; infrastructure is swappable |
 | **Two plugin types (Live/Stage)** | Real-time audio needs different constraints than batch processing |
-| **Factory pattern** | Plugins like noise-reduction have multiple algorithms (gate, spectral, rnnoise) |
+| **Factory registration** | Each `resolve` returns a fresh plugin instance — no shared mutable state between sessions |
+| **Factory pattern for strategies** | Plugins like noise-reduction have multiple algorithms (gate, spectral, wiener) |
 | **YAML pipelines** | Non-developers can define workflows; pipelines are version-controllable |
 | **Lock-free ring buffer** | Audio thread can't block — SPSC buffer with power-of-2 masking |
 | **Subprocess bridge** | Stage plugins can be any language (Python, Go, etc.) via JSON-over-stdio |
@@ -149,7 +164,7 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 ### Data Flow (Per Session)
 
 ```
-1. User runs: standup start --pipeline standup-comics
+1. standup start --pipeline standup-comics
 2. Session created → ~/.standup/sessions/<id>/
 3. Audio capture starts:
    - AVAudioEngine → mic PCM → [live chain] → ring buffer → disk
@@ -157,11 +172,12 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 4. Chunks written: chunks/000001_mic.pcm, chunks/000001_system.pcm, ...
 5. User stops session (Ctrl+C or standup stop)
 6. Pipeline stages execute as DAG:
-   - transcribe: PCM → WAV → whisper-cpp → segments.json
-   - diarize: PCM RMS analysis → speakers.json (me/them)
-   - clean-transcript: merge segments + speakers → transcript.json
-   - comic-formatter: NLP scoring → panels.json
-   - comic-renderer: panels → comic.html
+   a. transcribe: PCM → WAV → whisper-cpp → segments.json
+   b. diarize: PCM RMS analysis → speakers.json (me/them from separate channels)
+   c. clean-transcript: merge segments + speakers → transcript.json
+   d. comic-script: transcript → Ollama (gemma3:4b) → script.json with panels
+   e. panel-render: script → mflux image generation → panel PNGs (or SVG fallback)
+   f. comic-assemble: script + images → comic.html
 7. Session marked complete
 ```
 
@@ -171,59 +187,55 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 
 Run in the audio callback thread. Strict constraints: no heap allocs, no locks, <10ms budget.
 
-| Plugin | Strategy | What It Does |
-|---|---|---|
-| `noise-gate` | — | RMS-based silence gate |
-| `spectral-noise` | — | Spectral subtraction denoiser |
-| `rnnoise` | — | Wiener-filter noise reduction |
-| `lufs-normalize` | — | LUFS-targeted loudness normalization |
-| `peak-normalize` | — | Peak normalization |
+| Plugin | What It Does |
+|---|---|
+| `noise-gate` | RMS-based silence gate with configurable threshold and hold time |
+| `spectral-noise` | Spectral subtraction denoiser |
+| `wiener-noise` | Wiener-filter noise reduction |
+| `lufs-normalize` | LUFS-targeted loudness normalization |
+| `peak-normalize` | Peak normalization |
 
-**Factories** (select strategy in YAML):
-- `noise-reduction` → strategies: `gate`, `spectral`, `rnnoise`
+**Factories** (select strategy in YAML config):
+- `noise-reduction` → strategies: `gate`, `spectral`, `wiener`
 - `normalize` → strategies: `lufs`, `peak`
 
 ### Stage Plugins (Post-Session)
 
-Run after capture stops. Can be Swift or any executable.
+Run after capture stops. Can be Swift or any executable via the subprocess bridge.
 
 | Plugin | Input | Output | What It Does |
 |---|---|---|---|
-| `whisper` | audio chunks | transcription segments | whisper.cpp subprocess |
-| `channel-diarizer` | audio chunks | speaker labels | RMS per channel |
-| `energy-diarizer` | audio chunks | speaker labels | Energy patterns (fallback) |
-| `transcript-merger` | segments + labels | clean transcript | Time-aligned dialogue |
-| `comic-formatter` | clean transcript | comic panels | NLP: importance, mood, condensing |
-| `comic-renderer` | comic panels | HTML file | Self-contained comic strip |
+| `whisper` | audio chunks | transcription segments | Runs whisper.cpp as subprocess |
+| `channel-diarizer` | audio chunks | speaker labels | Per-channel RMS → me/them labels |
+| `energy-diarizer` | audio chunks | speaker labels | Energy pattern analysis (fallback) |
+| `transcript-merger` | segments + labels | clean transcript | Time-aligned speaker dialogue |
+| `comic-script` | clean transcript | comic script JSON | LLM-generated panels via Ollama |
+| `image-gen` | comic script | panel images | mflux FLUX generation (SVG fallback) |
+| `comic-renderer` | script + images | HTML file | Self-contained comic strip page |
 
 **Factory:** `diarizer` → strategies: `channel`, `energy`
 
-## Pipeline Definitions
+## Pipeline: standup-comics
 
-Pipelines are YAML files in `~/.standup/pipelines/`:
+The bundled pipeline captures your standup and turns it into a comic strip:
 
 ```yaml
 name: standup-comics
-description: Generate comics from standup meetings
 
 live:
   mic:
-    - plugin: noise-reduction
-      config:
-        strategy: gate
-        threshold_db: "-40"
+    - plugin: noise-gate
+      config: { threshold_db: "-40", hold_ms: "100" }
     - plugin: normalize
-      config:
-        target_lufs: "-16"
+      config: { target_lufs: "-16" }
   system:
     - plugin: normalize
+      config: { target_lufs: "-16" }
 
 stages:
   - id: transcribe
     plugin: whisper
     input: audio_chunks
-    config:
-      model: base.en
 
   - id: diarize
     plugin: channel-diarizer
@@ -231,53 +243,60 @@ stages:
 
   - id: clean-transcript
     plugin: transcript-merger
-    inputs:
-      - transcribe.output
-      - diarize.output
+    inputs: [transcribe.output, diarize.output]
 
-  - id: comic-formatter
-    plugin: comic-formatter
+  - id: comic-script
+    plugin: comic-script
     input: clean-transcript.output
+    config: { model: "gemma3:4b", max_panels: "8" }
 
-  - id: comic-renderer
+  - id: panel-render
+    plugin: image-gen
+    input: comic-script.output
+    config: { model: "schnell", steps: "4", width: "512", height: "512" }
+
+  - id: comic-assemble
     plugin: comic-renderer
-    input: comic-formatter.output
-    config:
-      title: "Daily Standup"
+    inputs: [comic-script.output, panel-render.output]
 ```
 
-Stages form a DAG — independent stages run in parallel (up to `stage_max_parallel`).
+Stages form a DAG — `transcribe` and `diarize` run in parallel, then each subsequent stage runs when its inputs are ready.
 
 ## Creating Your Own Plugins
 
 ### Swift Live Plugin
 
 ```swift
-final class MyFilter: BaseLivePlugin {
-    init() { super.init(id: "my-filter") }
+public final class MyFilter: BaseLivePlugin, @unchecked Sendable {
+    public init() { super.init(id: "my-filter") }
 
-    override func process(buffer: UnsafeMutablePointer<Float>,
-                          frameCount: Int,
-                          channel: AudioChannel) -> LivePluginResult {
-        for i in 0..<frameCount { buffer[i] *= 0.5 }  // Example: halve volume
+    override public func process(buffer: UnsafeMutablePointer<Float>,
+                                 frameCount: Int,
+                                 channel: AudioChannel) -> LivePluginResult {
+        for i in 0..<frameCount { buffer[i] *= 0.5 }
         return .modified
     }
 }
+// Register: registry.register(live: "my-filter") { MyFilter() }
 ```
 
 ### Swift Stage Plugin
 
 ```swift
-final class MyProcessor: BaseStagePlugin {
-    override var inputArtifacts: [ArtifactType] { [.cleanTranscript] }
-    init() { super.init(id: "my-processor") }
+public final class MyProcessor: BaseStagePlugin, @unchecked Sendable {
+    override public var inputArtifacts: [ArtifactType] { [.cleanTranscript] }
+    override public var outputArtifacts: [ArtifactType] { [.custom] }
+    public init() { super.init(id: "my-processor") }
 
-    override func execute(context: StageContext) async throws -> [Artifact] {
+    override public func execute(context: StageContext) async throws -> [Artifact] {
+        let input = context.inputArtifacts.values.first { $0.type == .cleanTranscript }!
         let outputDir = try ensureOutputDirectory(context: context)
-        // Read inputs from context.inputArtifacts, write outputs to outputDir
-        return [Artifact(stageId: id, type: .custom, path: outputPath)]
+        let outputPath = (outputDir as NSString).appendingPathComponent("output.json")
+        // Read input.path, process, write to outputPath
+        return [Artifact(stageId: context.stageId, type: .custom, path: outputPath)]
     }
 }
+// Register: registry.register(stage: "my-processor") { MyProcessor() }
 ```
 
 ### External Plugin (Any Language)
@@ -288,10 +307,45 @@ Any executable that speaks JSON over stdio:
 #!/usr/bin/env python3
 import json, sys
 request = json.loads(sys.stdin.readline())
-# request.inputs, request.config, request.session_id, request.output_path
+# request has: inputs, config, session_id, output_path
 result = {"status": "ok", "artifacts": [{"type": "custom", "path": "..."}]}
 print(json.dumps(result))
 ```
+
+## Creating Custom Pipelines
+
+Create a YAML file in `~/.standup/pipelines/` and reference built-in or custom plugins:
+
+```yaml
+name: my-meeting
+description: Extract action items from meetings
+
+stages:
+  - id: transcribe
+    plugin: whisper
+    input: audio_chunks
+
+  - id: diarize
+    plugin: channel-diarizer
+    input: audio_chunks
+
+  - id: merge
+    plugin: transcript-merger
+    inputs: [transcribe.output, diarize.output]
+
+  - id: actions
+    plugin: my-custom-extractor
+    input: merge.output
+```
+
+Run with: `standup start --pipeline my-meeting`
+
+**Stage DAG rules:**
+- Stages with no dependencies run in parallel (up to `stage_max_parallel`)
+- `input: audio_chunks` — raw capture data (always available)
+- `input: <stage-id>.output` — depends on another stage
+- `inputs: [a.output, b.output]` — depends on multiple stages
+- Cycles are detected and rejected at load time
 
 ## Tech Stack
 
@@ -299,11 +353,12 @@ print(json.dumps(result))
 |---|---|---|
 | Language | Swift 6 (strict concurrency) | Native macOS performance, type safety |
 | Audio capture | AVAudioEngine + ScreenCaptureKit | macOS native, dual-channel |
-| Transcription | whisper.cpp (subprocess) | Local-first, open-source, fast on Apple Silicon |
+| Transcription | whisper.cpp | Local, open-source, fast on Apple Silicon |
+| LLM | Ollama (gemma3:4b) | Local inference, no API keys |
+| Image gen | mflux (FLUX on MLX) | Apple Silicon optimized diffusion |
 | Persistence | SQLite (via SQLite.swift) | Lightweight, zero-config |
 | Config/Pipeline | YAML (via Yams) | Human-readable, git-friendly |
 | CLI | swift-argument-parser | Apple's official CLI framework |
-| Ring buffer | Custom SPSC | Lock-free, power-of-2 masking |
 
 ## Configuration
 
@@ -311,23 +366,24 @@ print(json.dumps(result))
 
 ```yaml
 performance:
-  max_live_plugin_latency_ms: 10   # Budget per live chain
+  max_live_plugin_latency_ms: 10   # Budget per live plugin chain
   stage_max_parallel: 2            # Concurrent stage execution
   stage_max_rss_mb: 512            # Memory limit for subprocesses
-  whisper_threads: 4               # CPU threads for whisper
-  whisper_model: base.en           # Model: tiny, base, small, medium, large
+  whisper_threads: 4               # CPU threads for whisper.cpp
+  whisper_model: base.en           # tiny.en | base.en | small.en | medium.en | large
 ```
 
 ## CLI Commands
 
 | Command | Description |
 |---|---|
-| `standup init` | First-time setup (dependencies, models, directories) |
-| `standup start --pipeline <name>` | Start capture session |
-| `standup stop` | Stop active session |
+| `standup init` | Full setup — installs all dependencies, models, directories |
+| `standup doctor` | Health check — verifies all dependencies without installing |
+| `standup start --pipeline <name>` | Start capture session with a pipeline |
+| `standup stop` | Stop the active session from another terminal |
 | `standup list` | List all sessions |
 | `standup show <id>` | Session details and artifacts |
-| `standup setup` | Lightweight directory/config setup |
+| `standup setup` | Lightweight directory/config setup only |
 
 See [CLI.md](CLI.md) for the full command reference.
 
@@ -335,29 +391,32 @@ See [CLI.md](CLI.md) for the full command reference.
 
 ```
 ~/.standup/sessions/<id>/
-├── chunks/
+├── chunks/                    # Raw PCM audio
 │   ├── 000001_mic.pcm
 │   ├── 000001_system.pcm
 │   └── ...
 ├── whisper/
-│   └── segments.json
+│   └── segments.json          # Transcription segments
 ├── channel-diarizer/
-│   └── speakers.json
+│   └── segments.json          # Speaker labels (me/them)
 ├── transcript-merger/
-│   └── transcript.json
-├── comic-formatter/
-│   └── panels.json
+│   └── transcript.json        # Merged speaker dialogue
+├── comic-script/
+│   └── script.json            # LLM-generated comic panels
+├── image-gen/
+│   ├── manifest.json          # Panel image paths
+│   └── panel_*.png            # Generated panel art (or .svg fallback)
 └── comic-renderer/
-    └── comic.html          ← Final output
+    └── comic.html             # Final output — open in browser
 ```
 
 ## Testing
 
 ```bash
-swift test    # 23 tests including full E2E pipeline
+swift test    # 25 tests including full E2E pipeline
 ```
 
-The E2E test generates synthetic dual-channel audio, runs the complete 5-stage standup-comics pipeline, and verifies every intermediate artifact through to the final HTML comic.
+The E2E test generates synthetic dual-channel audio, runs the complete 6-stage standup-comics pipeline, and verifies every intermediate artifact through to the final HTML comic.
 
 ## License
 
