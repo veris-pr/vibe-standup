@@ -21,9 +21,11 @@ standup init --skip-model       # Skip whisper model download
 2. Creates `~/.standup/` with subdirectories (sessions, pipelines, plugins, models)
 3. Installs `whisper-cpp` via Homebrew
 4. Downloads the whisper GGML model from Hugging Face
-5. Copies bundled pipeline YAML files to `~/.standup/pipelines/`
-6. Writes default `~/.standup/config.yaml`
-7. Reports macOS permission requirements
+5. Installs Ollama via Homebrew, starts the service, and pulls `gemma3:4b`
+6. Creates a Python venv at `~/.standup/venv/` and installs `mflux`
+7. Copies bundled pipeline YAML files to `~/.standup/pipelines/`
+8. Writes default `~/.standup/config.yaml`
+9. Reports macOS permission requirements
 
 **Whisper model sizes:**
 
@@ -124,6 +126,25 @@ Lightweight setup — creates directories and writes default config only. Use `s
 ```bash
 standup setup
 ```
+
+### `standup doctor`
+
+Read-only health check of all dependencies. Installs nothing — just reports what's working and what's missing.
+
+```bash
+standup doctor
+```
+
+**Checks:**
+- macOS version and architecture
+- `~/.standup/` directory structure and config
+- whisper-cpp binary and GGML models
+- Ollama installation, service status, and pulled models
+- mflux-generate availability
+- Installed pipelines
+- Plugin registry
+
+If issues are found, `doctor` tells you what to fix (usually just `standup init`).
 
 ## Session Workflow
 

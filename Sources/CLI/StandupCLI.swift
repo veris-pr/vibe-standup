@@ -11,7 +11,7 @@ struct StandupCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "standup",
         abstract: "Audio capture and processing pipeline for meetings",
-        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ListCommand.self, ShowCommand.self, SetupCommand.self]
+        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ListCommand.self, ShowCommand.self, SetupCommand.self, DoctorCommand.self]
     )
 }
 
@@ -103,9 +103,9 @@ struct InitCommand: AsyncParsableCommand {
         printStep("Checking virtual audio devices")
         checkVirtualDevices(&checks)
 
-        // 9. Optional dependencies for standup-comics pipeline
-        printStep("Checking optional dependencies (standup-comics)")
-        checkOptionalDependencies(&checks)
+        // 9. Install optional dependencies for standup-comics pipeline
+        printStep("Installing optional dependencies (standup-comics)")
+        try await installOptionalDependencies(dryRun: dryRun, checks: &checks)
 
         // 10. Validate plugin registry
         printStep("Validating plugin registry")
@@ -328,32 +328,103 @@ struct InitCommand: AsyncParsableCommand {
         }
     }
 
-    private func checkOptionalDependencies(_ checks: inout CheckResults) {
-        // Ollama (needed for comic-script LLM generation)
+    private func installOptionalDependencies(dryRun: Bool, checks: inout CheckResults) async throws {
+        try await installOllama(dryRun: dryRun, checks: &checks)
+        try await installMflux(dryRun: dryRun, checks: &checks)
+    }
+
+    private func installOllama(dryRun: Bool, checks: inout CheckResults) async throws {
         if let ollamaPath = findExecutable("ollama") {
             printOK("Ollama found: \(ollamaPath)")
-            print("  → Ensure a model is pulled: ollama pull gemma3:4b")
         } else {
-            printWarn("Ollama not found — comic-script stage will use heuristic fallback")
-            print("  → Install: brew install ollama && ollama pull gemma3:4b")
-            checks.warnings.append("Ollama not installed — comic script uses heuristic fallback")
+            guard let brew = findExecutable("brew") else {
+                printWarn("Ollama not found and Homebrew unavailable — comic-script will use heuristic fallback")
+                checks.warnings.append("Ollama not installed — comic script uses heuristic fallback")
+                return
+            }
+            if dryRun {
+                printDry("brew install ollama")
+            } else {
+                printProgress("Installing Ollama via Homebrew...")
+                let (exitCode, output) = try await runProcess(brew, args: ["install", "ollama"])
+                if exitCode == 0 {
+                    printOK("Ollama installed")
+                } else {
+                    printFail("Ollama install failed")
+                    if !output.isEmpty { print("  \(output.prefix(200))") }
+                    checks.warnings.append("Ollama install failed — comic script uses heuristic fallback")
+                    return
+                }
+            }
         }
 
-        // mflux-generate (needed for AI panel images)
-        let mfluxCandidates = [
-            "/opt/homebrew/bin/mflux-generate",
-            "/usr/local/bin/mflux-generate",
-        ]
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let allMflux = mfluxCandidates + [
-            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
-            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
-        ]
-        if let found = allMflux.first(where: { FileManager.default.fileExists(atPath: $0) }) {
-            printOK("mflux-generate found: \(found)")
+        // Start Ollama service if not already running
+        if !dryRun {
+            if let brew = findExecutable("brew") {
+                let (_, _) = try await runProcess(brew, args: ["services", "start", "ollama"])
+                // Ignore result — may already be running
+            }
+        }
+
+        // Pull gemma3:4b model if not present
+        guard let ollama = findExecutable("ollama") else { return }
+        let (_, listOutput) = try await runProcess(ollama, args: ["list"])
+        if listOutput.contains("gemma3:4b") {
+            printOK("Ollama model gemma3:4b already pulled")
         } else {
-            printWarn("mflux-generate not found — panel images will use SVG placeholders")
-            print("  → Install: pip install mflux")
+            if dryRun {
+                printDry("ollama pull gemma3:4b")
+            } else {
+                printProgress("Pulling gemma3:4b model (≈3.3 GB)...")
+                let (exitCode, output) = try await runProcess(ollama, args: ["pull", "gemma3:4b"])
+                if exitCode == 0 {
+                    printOK("gemma3:4b model pulled")
+                } else {
+                    printWarn("Failed to pull gemma3:4b — pull manually: ollama pull gemma3:4b")
+                    if !output.isEmpty { print("  \(output.prefix(200))") }
+                    checks.warnings.append("Ollama model pull failed")
+                }
+            }
+        }
+    }
+
+    private func installMflux(dryRun: Bool, checks: inout CheckResults) async throws {
+        if let found = findMflux() {
+            printOK("mflux-generate found: \(found)")
+            return
+        }
+
+        let venvDir = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent(".standup/venv")
+        let venvBin = (venvDir as NSString).appendingPathComponent("bin/mflux-generate")
+
+        if dryRun {
+            printDry("python3 -m venv \(venvDir) && \(venvDir)/bin/pip install mflux")
+            return
+        }
+
+        // Create venv if it doesn't exist
+        let venvPython = (venvDir as NSString).appendingPathComponent("bin/python3")
+        if !FileManager.default.fileExists(atPath: venvPython) {
+            printProgress("Creating Python venv at \(venvDir)...")
+            let (exitCode, output) = try await runProcess("/usr/bin/python3", args: ["-m", "venv", venvDir])
+            if exitCode != 0 {
+                printFail("Failed to create Python venv")
+                if !output.isEmpty { print("  \(output.prefix(200))") }
+                checks.warnings.append("mflux not installed — image generation uses SVG placeholders")
+                return
+            }
+        }
+
+        // Install mflux into the venv
+        let pip = (venvDir as NSString).appendingPathComponent("bin/pip")
+        printProgress("Installing mflux into venv (this may take a few minutes)...")
+        let (exitCode, output) = try await runProcess(pip, args: ["install", "mflux"])
+        if exitCode == 0 && FileManager.default.fileExists(atPath: venvBin) {
+            printOK("mflux installed: \(venvBin)")
+        } else {
+            printFail("mflux installation failed")
+            if !output.isEmpty { print("  \(output.prefix(200))") }
             checks.warnings.append("mflux not installed — image generation uses SVG placeholders")
         }
     }
@@ -367,6 +438,17 @@ struct InitCommand: AsyncParsableCommand {
             "/usr/bin/\(name)",
         ]
         return paths.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private func findMflux() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/opt/homebrew/bin/mflux-generate",
+            "/usr/local/bin/mflux-generate",
+            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
     private func shellOutput(_ path: String, args: [String]) throws -> String {
@@ -832,4 +914,190 @@ struct SetupCommand: AsyncParsableCommand {
         print("\nNote: macOS will prompt for Microphone and Screen Recording access on first run.")
         print("Setup complete!")
     }
+}
+
+// MARK: - Doctor
+
+struct DoctorCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "doctor",
+        abstract: "Check health of all dependencies without installing anything"
+    )
+
+    func run() async throws {
+        print("""
+        ┌──────────────────────────────────┐
+        │   Standup — Health Check          │
+        └──────────────────────────────────┘
+        """)
+
+        var issues: [String] = []
+
+        // System
+        printStep("System")
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let versionStr = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        if os.majorVersion >= 14 {
+            printOK("macOS \(versionStr)")
+        } else {
+            printFail("macOS \(versionStr) — requires 14+")
+            issues.append("macOS 14+ required")
+        }
+
+        #if arch(arm64)
+        printOK("Apple Silicon (arm64)")
+        #else
+        printWarn("Intel (x86_64) — some features may be slower")
+        #endif
+
+        // Directories
+        printStep("Standup directories")
+        let config = StandupConfig.load()
+        let fm = FileManager.default
+        for (label, path) in [("Base", config.baseDirectory), ("Pipelines", config.pipelinesDirectory), ("Sessions", config.sessionsDirectory)] {
+            if fm.fileExists(atPath: path) {
+                printOK("\(label): \(path)")
+            } else {
+                printFail("\(label): \(path) — missing")
+                issues.append("\(label) directory missing — run `standup init`")
+            }
+        }
+
+        let configPath = (config.baseDirectory as NSString).appendingPathComponent("config.yaml")
+        if fm.fileExists(atPath: configPath) {
+            printOK("Config: \(configPath)")
+        } else {
+            printFail("Config missing — run `standup init`")
+            issues.append("Config file missing")
+        }
+
+        // whisper-cpp
+        printStep("Transcription (whisper-cpp)")
+        let whisperBin = findExecutable("whisper-cli") ?? findExecutable("whisper-cpp")
+        if let path = whisperBin {
+            printOK("whisper binary: \(path)")
+        } else {
+            printFail("whisper-cpp not found")
+            issues.append("whisper-cpp not installed — run `standup init` or `brew install whisper-cpp`")
+        }
+
+        let modelsDir = (config.baseDirectory as NSString).appendingPathComponent("models")
+        let brewModelsDir = "/opt/homebrew/share/whisper-cpp/models"
+        let modelFiles = ((try? fm.contentsOfDirectory(atPath: modelsDir)) ?? [])
+            + ((try? fm.contentsOfDirectory(atPath: brewModelsDir)) ?? [])
+        let ggmlModels = modelFiles.filter { $0.hasPrefix("ggml-") && $0.hasSuffix(".bin") }
+        if ggmlModels.isEmpty {
+            printFail("No whisper models found")
+            issues.append("No whisper models — run `standup init`")
+        } else {
+            for m in Set(ggmlModels).sorted() { printOK("Model: \(m)") }
+        }
+
+        // Ollama
+        printStep("LLM (Ollama)")
+        if let ollamaPath = findExecutable("ollama") {
+            printOK("Ollama: \(ollamaPath)")
+
+            // Check if service is running
+            let reachable = try? await checkOllamaReachable()
+            if reachable == true {
+                printOK("Ollama service is running")
+
+                let (_, listOut) = try runProcess(ollamaPath, args: ["list"])
+                if listOut.contains("gemma3:4b") {
+                    printOK("Model: gemma3:4b")
+                } else {
+                    printFail("Model gemma3:4b not pulled")
+                    issues.append("Run `ollama pull gemma3:4b`")
+                }
+            } else {
+                printFail("Ollama service not running")
+                issues.append("Start Ollama: `brew services start ollama`")
+            }
+        } else {
+            printFail("Ollama not installed")
+            issues.append("Ollama not installed — run `standup init`")
+        }
+
+        // mflux
+        printStep("Image generation (mflux)")
+        if let mfluxPath = findMflux() {
+            printOK("mflux-generate: \(mfluxPath)")
+        } else {
+            printFail("mflux-generate not found")
+            issues.append("mflux not installed — run `standup init`")
+        }
+
+        // Pipelines
+        printStep("Pipelines")
+        let yamlFiles = ((try? fm.contentsOfDirectory(atPath: config.pipelinesDirectory)) ?? [])
+            .filter { $0.hasSuffix(".yaml") }
+        if yamlFiles.isEmpty {
+            printFail("No pipelines installed")
+            issues.append("No pipelines — run `standup init`")
+        } else {
+            for f in yamlFiles.sorted() { printOK(f) }
+        }
+
+        // Plugins
+        printStep("Plugin registry")
+        let registry = buildRegistry()
+        printOK("Live:  \(registry.allLivePluginIds.joined(separator: ", "))")
+        printOK("Stage: \(registry.allStagePluginIds.joined(separator: ", "))")
+
+        // Summary
+        print("\n┌──────────────────────────────────┐")
+        print("│   Summary                        │")
+        print("└──────────────────────────────────┘")
+        if issues.isEmpty {
+            print("  ✓ All checks passed. Ready to go!")
+        } else {
+            print("  Issues found:")
+            for issue in issues { print("    ✗ \(issue)") }
+            print("\n  Run `standup init` to fix missing dependencies.")
+        }
+        print()
+    }
+
+    // MARK: - Helpers
+
+    private func findExecutable(_ name: String) -> String? {
+        let paths = ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)"]
+        return paths.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private func findMflux() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/opt/homebrew/bin/mflux-generate",
+            "/usr/local/bin/mflux-generate",
+            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private func runProcess(_ path: String, args: [String]) throws -> (Int32, String) {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private func checkOllamaReachable() async throws -> Bool {
+        let url = URL(string: "http://localhost:11434/api/tags")!
+        let (_, response) = try await URLSession.shared.data(from: url)
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    private func printStep(_ msg: String) { print("\n▸ \(msg)") }
+    private func printOK(_ msg: String) { print("  ✓ \(msg)") }
+    private func printFail(_ msg: String) { print("  ✗ \(msg)") }
+    private func printWarn(_ msg: String) { print("  ⚠ \(msg)") }
 }
