@@ -12,7 +12,9 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
     override public var inputArtifacts: [ArtifactType] { [.comicScript] }
     override public var outputArtifacts: [ArtifactType] { [.panelImages] }
 
-    private var model: String = "schnell"
+    private static let defaultModel = "RunPod/FLUX.2-klein-4B-mflux-4bit"
+
+    private var model: String = ImageGenPlugin.defaultModel
     private var steps: Int = 4
     private var width: Int = 512
     private var height: Int = 512
@@ -23,7 +25,7 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
     }
 
     override public func onSetup() async throws {
-        model = config.string(for: "model", default: "schnell")
+        model = config.string(for: "model", default: Self.defaultModel)
         steps = config.int(for: "steps", default: 4)
         width = config.int(for: "width", default: 512)
         height = config.int(for: "height", default: 512)
@@ -94,15 +96,21 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
         let (terminationStatus, stderrData) = try await Task.detached {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: mflux)
-            process.arguments = [
+            var args = [
                 "--model", model,
                 "--prompt", prompt,
                 "--output", outputPath,
                 "--steps", "\(steps)",
                 "--width", "\(width)",
                 "--height", "\(height)",
-                "-q", "4"  // 4-bit quantization for speed on 16GB
+                "--low-ram",
             ]
+            // Only add quantization for non-pre-quantized models
+            let isPreQuantized = model.lowercased().contains("mflux-") && model.lowercased().contains("bit")
+            if !isPreQuantized {
+                args += ["-q", "4"]
+            }
+            process.arguments = args
             process.standardOutput = FileHandle.nullDevice
             let stderrPipe = Pipe()
             process.standardError = stderrPipe
@@ -171,22 +179,24 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
     // MARK: - Helpers
 
     private func findMflux() -> String? {
-        // Check common locations for mflux-generate
-        let candidates = [
-            "/opt/homebrew/bin/mflux-generate",
-            "/usr/local/bin/mflux-generate",
-        ]
-        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
-            return found
-        }
-
-        // Check in Python venv paths
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let venvPaths = [
-            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
-            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        // Prefer flux2-specific binary, fall back to generic mflux-generate
+        let binaries = ["mflux-generate-flux2", "mflux-generate"]
+        let searchDirs = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            (home as NSString).appendingPathComponent(".local/bin"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin"),
         ]
-        return venvPaths.first { FileManager.default.fileExists(atPath: $0) }
+        for binary in binaries {
+            for dir in searchDirs {
+                let path = (dir as NSString).appendingPathComponent(binary)
+                if FileManager.default.fileExists(atPath: path) {
+                    return path
+                }
+            }
+        }
+        return nil
     }
 
     private func isLightColor(_ hex: String) -> Bool {

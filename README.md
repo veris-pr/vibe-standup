@@ -576,14 +576,14 @@ stages:
     plugin: comic-script
     input: clean-transcript.output
     config:
-      model: gemma3:4b
+      model: gemma4
       max_panels: "8"
 
   - id: panel-render
     plugin: image-gen
     input: comic-script.output
     config:
-      model: schnell
+      model: RunPod/FLUX.2-klein-4B-mflux-4bit
       steps: "4"
       width: "512"
       height: "512"
@@ -999,11 +999,32 @@ See [CLI.md](CLI.md) for the full command reference.
 | Language | Swift 6 (strict concurrency) | Native macOS performance, type safety |
 | Audio capture | AVAudioEngine + ScreenCaptureKit | macOS native, dual-channel |
 | Transcription | mlx-whisper (MLX framework) | Local, open-source, fast on Apple Silicon |
-| LLM | Ollama (gemma4 / gemma3:4b) | Local inference, no API keys |
-| Image gen | mflux (FLUX on MLX) | Apple Silicon optimized diffusion |
+| LLM | Ollama (gemma4) | Local inference, no API keys |
+| Image gen | mflux (FLUX.2-klein-4B) | Apache 2.0, MLX-optimized, pre-quantized |
 | Persistence | SQLite (via SQLite.swift) | Lightweight, zero-config |
 | Config/Pipeline | YAML (via Yams) | Human-readable, git-friendly |
 | CLI | swift-argument-parser | Apple's official CLI framework |
+
+### Model Discipline — One Model Per Task
+
+> **Rule: Keep exactly one downloaded model per capability. Prefer MLX-optimized, pre-quantized weights. Remove models you're not using.**
+
+This project runs on consumer hardware (M2 16GB). Downloading multiple large models eats disk and RAM fast. Every model choice should be deliberate:
+
+| Task | Model | Size | Source |
+|---|---|---|---|
+| Speech-to-text | `mlx-community/whisper-large-v3-turbo` | 1.5 GB | HuggingFace (MLX) |
+| LLM (cleanup + scripts) | `gemma4` | 9.6 GB | Ollama |
+| Image generation | `RunPod/FLUX.2-klein-4B-mflux-4bit` | 4.3 GB | HuggingFace (pre-quantized MLX) |
+| **Total** | | **~15.4 GB** | |
+
+**When switching models:**
+1. Update the pipeline YAML config
+2. Remove the old model (`ollama rm <old>`, or delete from `~/.cache/huggingface/hub/`)
+3. Test the pipeline end-to-end
+4. Update this table
+
+**Why not multiple models?** We previously had `whisper-turbo` AND `whisper-large-v3-turbo`, `gemma3:4b` AND `gemma4`, etc. The duplicates consumed 12+ GB of extra disk for marginal benefit. One model per task, tested and validated.
 
 ## Configuration
 

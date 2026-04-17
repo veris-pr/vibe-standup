@@ -43,14 +43,14 @@ stages:
     plugin: comic-script
     input: clean-transcript.output
     config:
-      model: gemma3:4b
+      model: gemma4
       max_panels: "8"
 
   - id: panel-render
     plugin: image-gen
     input: comic-script.output
     config:
-      model: schnell
+      model: RunPod/FLUX.2-klein-4B-mflux-4bit
       steps: "4"
       width: "512"
       height: "512"
