@@ -1,0 +1,69 @@
+# Standup Comics Pipeline — Hybrid (mix local + cloud)
+# Demonstrates mixing providers per stage:
+#   ASR:   Local mlx-whisper (fast, free, no network)
+#   Diarize: Local channel-diarizer (always local — no cloud needed)
+#   LLM cleanup: AWS Bedrock Claude Haiku (best multilingual cleanup)
+#   Comic script: Local Ollama gemma4 (fast, creative, no cost)
+#   Image gen: Google Imagen (high quality comic panels)
+#   Assembly: Local comic-renderer (always local)
+#
+# This shows the key design: each stage picks its backend independently.
+# Swap any single stage without touching the rest.
+
+name: standup-comics-hybrid
+description: Mixed local + cloud pipeline (best of each provider)
+
+live:
+  mic:
+    - plugin: noise-gate
+      config:
+        threshold_db: "-40"
+        hold_ms: "100"
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+  system:
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+
+stages:
+  - id: transcribe
+    plugin: mlx-whisper              # LOCAL — fast, no network needed
+    input: audio_chunks
+    config:
+      model: mlx-community/whisper-large-v3-turbo
+      language: hi
+
+  - id: diarize
+    plugin: channel-diarizer         # LOCAL — always local
+    input: audio_chunks
+
+  - id: clean-transcript
+    plugin: bedrock-llm              # AWS — Claude Haiku for cleanup
+    inputs:
+      - transcribe.output
+      - diarize.output
+    config:
+      model_id: anthropic.claude-3-haiku-20240307-v1:0
+      region: us-east-1
+
+  - id: comic-script
+    plugin: comic-script             # LOCAL — Ollama gemma4
+    input: clean-transcript.output
+    config:
+      model: gemma4
+      max_panels: "8"
+
+  - id: panel-render
+    plugin: google-image-gen         # GOOGLE — Imagen 3
+    input: comic-script.output
+    config:
+      model: imagen-3.0-generate-001
+      region: us-central1
+
+  - id: comic-assemble
+    plugin: comic-renderer           # LOCAL — always local
+    inputs:
+      - comic-script.output
+      - panel-render.output

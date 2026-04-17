@@ -925,6 +925,22 @@ stages:
     input: clean.output
 ```
 
+**Hybrid — mix providers freely per stage:**
+```yaml
+# See pipelines/standup-comics-hybrid.yaml for a full working example
+stages:
+  - id: transcribe
+    plugin: mlx-whisper          # Local — fast, free
+  - id: clean-transcript
+    plugin: bedrock-llm          # AWS — Claude for best multilingual cleanup
+  - id: comic-script
+    plugin: comic-script         # Local — gemma4 via Ollama
+  - id: panel-render
+    plugin: google-image-gen     # Google — Imagen for high-quality panels
+```
+
+Each stage only cares about its input/output artifact types — not which provider produced them.
+
 **Meeting summary with reminders:**
 ```yaml
 stages:
