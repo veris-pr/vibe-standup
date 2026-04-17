@@ -18,5 +18,10 @@ public enum StagePluginRegistration {
         registry.register(stage: "comic-script") { ComicScriptPlugin() }
         registry.register(stage: "image-gen") { ImageGenPlugin() }
         registry.register(stage: "comic-renderer") { ComicRendererPlugin() }
+
+        // Cloud (AWS Bedrock) plugins
+        registry.register(stage: "bedrock-transcribe") { BedrockTranscribePlugin() }
+        registry.register(stage: "bedrock-llm") { BedrockLLMPlugin() }
+        registry.register(stage: "bedrock-image-gen") { BedrockImageGenPlugin() }
     }
 }

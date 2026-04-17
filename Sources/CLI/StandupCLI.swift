@@ -25,6 +25,7 @@ func buildRegistry() -> PluginRegistry {
 }
 
 func buildServices() throws -> (config: StandupConfig, registry: PluginRegistry, sessionService: SessionService, pipelineService: PipelineService) {
+    EnvLoader.loadIfPresent()
     let config = StandupConfig.load()
     let registry = buildRegistry()
     let repo = try SQLiteSessionRepository(dbPath: config.dbPath)
@@ -1319,6 +1320,28 @@ struct DoctorCommand: AsyncParsableCommand {
             issues.append("mflux not installed — run `standup init`")
         }
 
+        // AWS (optional — for Bedrock cloud plugins)
+        printStep("AWS Bedrock (optional)")
+        if let awsPath = AWSCLIRunner.findAWSCLI() {
+            printOK("AWS CLI: \(awsPath)")
+            let aws = AWSCLIRunner()
+            if await aws.checkCredentials() {
+                printOK("AWS credentials configured")
+            } else {
+                printWarn("AWS credentials not configured — cloud plugins will not work")
+            }
+        } else {
+            printInfo("AWS CLI not installed — cloud plugins unavailable (local-only is fine)")
+        }
+
+        // .env file
+        let envPath = (config.baseDirectory as NSString).appendingPathComponent(".env")
+        if fm.fileExists(atPath: envPath) {
+            printOK(".env: \(envPath)")
+        } else {
+            printInfo("No .env file — see .env.example for cloud plugin configuration")
+        }
+
         // Pipelines
         printStep("Pipelines")
         let yamlFiles = ((try? fm.contentsOfDirectory(atPath: config.pipelinesDirectory)) ?? [])
@@ -1400,4 +1423,5 @@ struct DoctorCommand: AsyncParsableCommand {
     private func printOK(_ msg: String) { print("  ✓ \(msg)") }
     private func printFail(_ msg: String) { print("  ✗ \(msg)") }
     private func printWarn(_ msg: String) { print("  ⚠ \(msg)") }
+    private func printInfo(_ msg: String) { print("  ℹ \(msg)") }
 }

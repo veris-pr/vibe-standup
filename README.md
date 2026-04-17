@@ -460,6 +460,10 @@ All config values are strings in the YAML, parsed by these typed accessors.
 | `comic-script` | clean transcript → comic script | LLM-generated comic panels via Ollama |
 | `image-gen` | comic script → panel images | mflux FLUX generation (SVG fallback) |
 | `comic-renderer` | script + images → HTML | Self-contained comic strip page |
+| **Cloud (AWS Bedrock)** | | |
+| `bedrock-transcribe` | audio chunks → transcription segments | Amazon Transcribe via AWS CLI (batch S3 job) |
+| `bedrock-llm` | clean transcript → comic script | Claude Haiku via Bedrock |
+| `bedrock-image-gen` | comic script → panel images | Stability AI SDXL via Bedrock |
 
 ---
 
@@ -1038,6 +1042,47 @@ performance:
   # mlx-whisper model (HuggingFace repo)
   whisper_model: mlx-community/whisper-large-v3-turbo
 ```
+
+## Cloud Plugins (AWS Bedrock)
+
+Every local plugin has a cloud-backed alternative using AWS Bedrock. Swap plugins in your YAML — the pipeline contract stays the same.
+
+| Local Plugin | Cloud Plugin | AWS Service |
+|---|---|---|
+| `mlx-whisper` | `bedrock-transcribe` | Amazon Transcribe |
+| `transcript-cleaner` / `comic-script` | `bedrock-llm` | Claude Haiku via Bedrock |
+| `image-gen` | `bedrock-image-gen` | Stability AI SDXL via Bedrock |
+
+### Setup
+
+1. Install and configure AWS CLI:
+   ```bash
+   brew install awscli
+   aws configure    # or set up a named profile
+   ```
+
+2. Create `~/.standup/.env` from the template:
+   ```bash
+   cp .env.example ~/.standup/.env
+   # Edit with your AWS profile/region/bucket
+   ```
+
+3. Enable Bedrock model access in your AWS console (Bedrock → Model access)
+
+4. Deploy the cloud pipeline:
+   ```bash
+   cp pipelines/standup-comics-bedrock.yaml ~/.standup/pipelines/
+   standup start --pipeline standup-comics-bedrock
+   ```
+
+### Credential Security
+
+- Credentials are loaded from `~/.standup/.env` (never committed — `.env` is in `.gitignore`)
+- Existing environment variables take precedence over `.env` values
+- AWS named profiles (`AWS_PROFILE`) are recommended over raw keys
+- `standup doctor` checks AWS CLI and credential status
+
+See `.env.example` for all supported variables.
 
 ## Testing
 
