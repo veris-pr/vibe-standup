@@ -80,6 +80,7 @@ public protocol SessionRepository: Sendable {
     func update(_ session: Session) throws
     func find(id: String) throws -> Session?
     func listAll() throws -> [Session]
+    func delete(id: String) throws
 }
 
 // MARK: - Session Errors

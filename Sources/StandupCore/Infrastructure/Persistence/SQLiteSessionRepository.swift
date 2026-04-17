@@ -64,6 +64,10 @@ public final class SQLiteSessionRepository: SessionRepository, @unchecked Sendab
         try db.prepare(sessions.order(colStartTime.desc)).map(rowToSession)
     }
 
+    public func delete(id: String) throws {
+        try db.run(sessions.filter(colId == id).delete())
+    }
+
     private func rowToSession(_ row: Row) -> Session {
         Session(
             id: row[colId],

@@ -11,7 +11,7 @@ struct StandupCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "standup",
         abstract: "Audio capture and processing pipeline for meetings",
-        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ResumeCommand.self, ListCommand.self, ShowCommand.self, SetupCommand.self, DoctorCommand.self]
+        subcommands: [InitCommand.self, StartCommand.self, StopCommand.self, ResumeCommand.self, SessionCommand.self, CleanupCommand.self, SetupCommand.self, DoctorCommand.self]
     )
 }
 
@@ -922,11 +922,32 @@ struct ResumeCommand: AsyncParsableCommand {
 
 // MARK: - List
 
-struct ListCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "list", abstract: "List all sessions")
+// MARK: - Session
+
+struct SessionCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "session",
+        abstract: "List sessions or show session details",
+        discussion: "Without arguments, lists all sessions. With a session ID, shows details. Use --open to open generated outputs."
+    )
+
+    @Argument(help: "Session ID to show details for (optional)")
+    var sessionId: String?
+
+    @Flag(name: .long, help: "Open the session output directory or generated comic")
+    var open: Bool = false
 
     func run() async throws {
         let (_, _, sessionService, _) = try buildServices()
+
+        if let sessionId {
+            try showSession(sessionId: sessionId, sessionService: sessionService)
+        } else {
+            try listSessions(sessionService: sessionService)
+        }
+    }
+
+    private func listSessions(sessionService: SessionService) throws {
         let sessions = try sessionService.listSessions()
 
         if sessions.isEmpty {
@@ -934,28 +955,29 @@ struct ListCommand: AsyncParsableCommand {
             return
         }
 
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd HH:mm"
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "yyyy-MM-dd HH:mm"
 
-        print(String(format: "%-10s %-20s %-12s %s", "SESSION", "PIPELINE", "STATUS", "STARTED"))
-        print(String(repeating: "─", count: 60))
+        let header = "SESSION".padding(toLength: 10, withPad: " ", startingAt: 0)
+            + "STATUS".padding(toLength: 12, withPad: " ", startingAt: 0)
+            + "DURATION".padding(toLength: 10, withPad: " ", startingAt: 0)
+            + "STARTED".padding(toLength: 18, withPad: " ", startingAt: 0)
+            + "PIPELINE"
+        print(header)
+        print(String(repeating: "─", count: 72))
         for s in sessions {
-            print(String(format: "%-10s %-20s %-12s %s", s.id, s.pipelineName, s.status.rawValue, fmt.string(from: s.startTime)))
+            let duration = formatDuration(s)
+            let diskSize = directorySize(s.directoryPath)
+            let line = "\(s.id.padding(toLength: 10, withPad: " ", startingAt: 0))"
+                + "\(s.status.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0))"
+                + "\(duration.padding(toLength: 10, withPad: " ", startingAt: 0))"
+                + "\(dateFmt.string(from: s.startTime).padding(toLength: 18, withPad: " ", startingAt: 0))"
+                + "\(s.pipelineName) (\(formatBytes(diskSize)))"
+            print(line)
         }
     }
-}
 
-// MARK: - Show
-
-struct ShowCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "show", abstract: "Show session details")
-
-    @Argument(help: "Session ID")
-    var sessionId: String
-
-    func run() async throws {
-        let (_, _, sessionService, _) = try buildServices()
-
+    private func showSession(sessionId: String, sessionService: SessionService) throws {
         guard let session = try sessionService.getSession(id: sessionId) else {
             print("Session not found: \(sessionId)")
             return
@@ -967,15 +989,17 @@ struct ShowCommand: AsyncParsableCommand {
         print("Status:    \(session.status.rawValue)")
         print("Started:   \(session.startTime)")
         if let end = session.endTime {
-            print("Duration:  \(String(format: "%.0f", end.timeIntervalSince(session.startTime)))s")
+            let secs = end.timeIntervalSince(session.startTime)
+            print("Duration:  \(formatSeconds(secs))")
         }
+        print("Disk:      \(formatBytes(directorySize(session.directoryPath)))")
         print("Directory: \(session.directoryPath)")
 
         let fm = FileManager.default
 
         // Show pipeline state if available
         if let state = PipelineState.load(from: session.directoryPath) {
-            print("Pipeline stages:")
+            print("\nPipeline stages:")
             for s in state.stages {
                 let icon: String
                 switch s.status {
@@ -995,13 +1019,205 @@ struct ShowCommand: AsyncParsableCommand {
                 var isDir: ObjCBool = false
                 fm.fileExists(atPath: (session.directoryPath as NSString).appendingPathComponent(name), isDirectory: &isDir)
                 return isDir.boolValue
-            }
+            }.sorted()
             if !dirs.isEmpty {
-                print("Artifacts:")
-                for dir in dirs.sorted() { print("  └─ \(dir)/") }
+                print("\nArtifacts:")
+                for dir in dirs { print("  └─ \(dir)/") }
+            }
+        }
+
+        if open {
+            openSessionOutput(session: session)
+        }
+    }
+
+    private func openSessionOutput(session: Session) {
+        // Try to open comic HTML first, then fall back to directory
+        let comicPath = (session.directoryPath as NSString).appendingPathComponent("comic-assemble/comic.html")
+        let fm = FileManager.default
+
+        if fm.fileExists(atPath: comicPath) {
+            print("\n⬗ Opening comic: \(comicPath)")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = [comicPath]
+            try? process.run()
+        } else {
+            print("\n⬗ Opening session directory: \(session.directoryPath)")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = [session.directoryPath]
+            try? process.run()
+        }
+    }
+
+    private func formatDuration(_ session: Session) -> String {
+        guard let end = session.endTime else {
+            return session.status == .active ? "recording…" : "—"
+        }
+        return formatSeconds(end.timeIntervalSince(session.startTime))
+    }
+
+    private func formatSeconds(_ secs: Double) -> String {
+        let totalSeconds = Int(secs)
+        if totalSeconds < 60 { return "\(totalSeconds)s" }
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        if minutes < 60 { return "\(minutes)m \(seconds)s" }
+        let hours = minutes / 60
+        return "\(hours)h \(minutes % 60)m"
+    }
+}
+
+// MARK: - Cleanup
+
+struct CleanupCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "cleanup",
+        abstract: "Remove old session data",
+        discussion: "Delete session data based on age, status, and what to clean (inputs, outputs, or everything)."
+    )
+
+    @Option(name: .long, help: "Remove sessions older than: day, week, month")
+    var olderThan: AgePeriod = .week
+
+    @Option(name: .long, help: "Filter by status: complete, incomplete, failed, all")
+    var status: StatusFilter = .all
+
+    @Option(name: .long, help: "What to clean: inputs (audio chunks), outputs (pipeline results), all (entire session)")
+    var target: CleanTarget = .all
+
+    @Flag(name: .long, help: "Skip confirmation prompt")
+    var force: Bool = false
+
+    enum AgePeriod: String, ExpressibleByArgument, CaseIterable {
+        case day, week, month
+        var cutoffInterval: TimeInterval {
+            switch self {
+            case .day: return 86_400
+            case .week: return 604_800
+            case .month: return 2_592_000
             }
         }
     }
+
+    enum StatusFilter: String, ExpressibleByArgument, CaseIterable {
+        case complete, incomplete, failed, all
+        func matches(_ status: SessionStatus) -> Bool {
+            switch self {
+            case .complete: return status == .complete
+            case .incomplete: return status == .active || status == .processing
+            case .failed: return status == .failed
+            case .all: return true
+            }
+        }
+    }
+
+    enum CleanTarget: String, ExpressibleByArgument, CaseIterable {
+        case inputs, outputs, all
+    }
+
+    func run() async throws {
+        let (config, _, sessionService, _) = try buildServices()
+        let sessions = try sessionService.listSessions()
+        let cutoff = Date().addingTimeInterval(-olderThan.cutoffInterval)
+
+        let matching = sessions.filter { session in
+            session.startTime < cutoff && status.matches(session.status)
+        }
+
+        if matching.isEmpty {
+            print("No sessions match the filter (older than \(olderThan.rawValue), status: \(status.rawValue))")
+            return
+        }
+
+        let totalSize = matching.reduce(0) { $0 + directorySize($1.directoryPath) }
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "yyyy-MM-dd HH:mm"
+
+        print("Sessions matching filter (older than 1 \(olderThan.rawValue), status: \(status.rawValue), target: \(target.rawValue)):")
+        print()
+        for s in matching {
+            let size = directorySize(s.directoryPath)
+            print("  \(s.id)  \(s.status.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0))  \(dateFmt.string(from: s.startTime))  \(formatBytes(size))")
+        }
+        print()
+        print("Total: \(matching.count) session(s), \(formatBytes(totalSize))")
+
+        if !force {
+            print()
+            print("Proceed? [y/N] ", terminator: "")
+            guard let answer = readLine()?.lowercased(), answer == "y" || answer == "yes" else {
+                print("Aborted")
+                return
+            }
+        }
+
+        // Resolve stage IDs for output-only cleanup
+        let pipelineDir = config.pipelinesDirectory
+
+        var cleaned = 0
+        for session in matching {
+            switch target {
+            case .all:
+                try sessionService.deleteSession(id: session.id)
+            case .inputs:
+                try sessionService.cleanInputs(session: session)
+            case .outputs:
+                let stageIds = stageIdsForSession(session, pipelineDir: pipelineDir)
+                try sessionService.cleanOutputs(session: session, stageIds: stageIds)
+            }
+            cleaned += 1
+        }
+
+        let verb: String
+        switch target {
+        case .all: verb = "Deleted"
+        case .inputs: verb = "Cleaned inputs for"
+        case .outputs: verb = "Cleaned outputs for"
+        }
+        print("✓ \(verb) \(cleaned) session(s)")
+    }
+
+    /// Resolve stage IDs from the pipeline YAML so we know which dirs are outputs.
+    private func stageIdsForSession(_ session: Session, pipelineDir: String) -> [String] {
+        let yamlPath = (pipelineDir as NSString).appendingPathComponent("\(session.pipelineName).yaml")
+        guard let definition = try? PipelineService.load(from: yamlPath) else {
+            // Fallback: list all subdirectories except "chunks"
+            let fm = FileManager.default
+            return (try? fm.contentsOfDirectory(atPath: session.directoryPath))?
+                .filter { name in
+                    guard name != "chunks" else { return false }
+                    var isDir: ObjCBool = false
+                    fm.fileExists(atPath: (session.directoryPath as NSString).appendingPathComponent(name), isDirectory: &isDir)
+                    return isDir.boolValue
+                } ?? []
+        }
+        return definition.stages.map(\.id)
+    }
+}
+
+// MARK: - Shared helpers
+
+private func directorySize(_ path: String) -> Int64 {
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(atPath: path) else { return 0 }
+    var total: Int64 = 0
+    while let file = enumerator.nextObject() as? String {
+        let fullPath = (path as NSString).appendingPathComponent(file)
+        if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+           let size = attrs[.size] as? Int64 {
+            total += size
+        }
+    }
+    return total
+}
+
+private func formatBytes(_ bytes: Int64) -> String {
+    if bytes < 1024 { return "\(bytes) B" }
+    if bytes < 1_048_576 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+    if bytes < 1_073_741_824 { return String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+    return String(format: "%.1f GB", Double(bytes) / 1_073_741_824)
 }
 
 // MARK: - Setup

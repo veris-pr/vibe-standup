@@ -121,6 +121,29 @@ public final class SessionService: @unchecked Sendable {
         try repository.listAll()
     }
 
+    public func deleteSession(id: String) throws {
+        guard let session = try repository.find(id: id) else {
+            throw SessionError.notFound(id)
+        }
+        try? FileManager.default.removeItem(atPath: session.directoryPath)
+        try repository.delete(id: id)
+    }
+
+    /// Remove only input data (audio chunks) for a session.
+    public func cleanInputs(session: Session) throws {
+        try? FileManager.default.removeItem(atPath: session.chunksPath)
+    }
+
+    /// Remove only pipeline output directories for a session.
+    public func cleanOutputs(session: Session, stageIds: [String]) throws {
+        let fm = FileManager.default
+        for stageId in stageIds {
+            let stagePath = session.stageOutputPath(for: stageId)
+            try? fm.removeItem(atPath: stagePath)
+        }
+        PipelineState.remove(from: session.directoryPath)
+    }
+
     public func getSession(id: String) throws -> Session? {
         try repository.find(id: id)
     }
