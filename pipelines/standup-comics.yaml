@@ -25,8 +25,8 @@ stages:
     plugin: whisper
     input: audio_chunks
     config:
-      model: base.en
-      language: en
+      model: small
+      language: auto
 
   - id: diarize
     plugin: channel-diarizer

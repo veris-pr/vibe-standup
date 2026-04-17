@@ -24,18 +24,20 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
     override public var outputArtifacts: [ArtifactType] { [.transcriptionSegments] }
 
     private var modelPath: String = ""
-    private var language: String = "en"
+    private var language: String = "auto"
     private var whisperPath: String = ""
     private var threads: Int = 4
+    private var maxSegmentSeconds: Int = 30
 
     public init() {
         super.init(id: "whisper")
     }
 
     override public func onSetup() async throws {
-        language = config.string(for: "language", default: "en")
+        language = config.string(for: "language", default: "auto")
         threads = config.int(for: "threads", default: 4)
-        let modelName = config.string(for: "model", default: "base.en")
+        maxSegmentSeconds = config.int(for: "max_segment_seconds", default: 30)
+        let modelName = config.string(for: "model", default: "small")
 
         whisperPath = config.string(for: "whisper_path", default: "")
         if whisperPath.isEmpty {
@@ -61,9 +63,27 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         let fm = FileManager.default
         if !whisperPath.isEmpty && fm.fileExists(atPath: whisperPath)
             && !modelPath.isEmpty && fm.fileExists(atPath: modelPath) {
-            segments = try await runWhisperCpp(wavPath: mergedWAV, outputDir: outputDir)
+            // Split into shorter clips to prevent whisper hallucination on long audio
+            let clipPaths = try splitWAVIntoClips(wavPath: mergedWAV, outputDir: outputDir)
+            var allSegments: [WhisperSegmentOutput] = []
+            for (clipIndex, clipPath) in clipPaths.enumerated() {
+                let clipOutputDir = (outputDir as NSString).appendingPathComponent("clip_\(clipIndex)")
+                try fm.createDirectory(atPath: clipOutputDir, withIntermediateDirectories: true)
+                let clipSegments = try await runWhisperCpp(wavPath: clipPath, outputDir: clipOutputDir)
+                let timeOffset = Double(clipIndex * maxSegmentSeconds)
+                allSegments.append(contentsOf: clipSegments.map { seg in
+                    WhisperSegmentOutput(
+                        startTime: seg.startTime + timeOffset,
+                        endTime: seg.endTime + timeOffset,
+                        text: seg.text
+                    )
+                })
+                // Clean up clip temp files
+                try? fm.removeItem(atPath: clipPath)
+                try? fm.removeItem(atPath: clipOutputDir)
+            }
+            segments = deduplicateSegments(allSegments)
         } else {
-            // Fallback: detect audio duration and emit placeholder
             segments = try createPlaceholderSegments(wavPath: mergedWAV)
         }
 
@@ -157,6 +177,81 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         try wav.write(to: URL(fileURLWithPath: outputPath))
     }
 
+    // MARK: - Split WAV into clips
+
+    /// Splits a long WAV into shorter clips to prevent whisper hallucination.
+    /// Returns paths to the clip files.
+    private func splitWAVIntoClips(wavPath: String, outputDir: String) throws -> [String] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: wavPath))
+        guard data.count > 44 else { return [wavPath] }
+
+        let sampleRate: Int = 48000
+        let bytesPerSample = 4 // Float32
+        let samplesPerClip = sampleRate * maxSegmentSeconds
+        let bytesPerClip = samplesPerClip * bytesPerSample
+        let audioData = data.dropFirst(44)
+        let totalBytes = audioData.count
+
+        // If audio fits in one clip, just return the original
+        if totalBytes <= bytesPerClip {
+            return [wavPath]
+        }
+
+        let header = data.prefix(44)
+        var paths: [String] = []
+        var offset = 0
+        var clipIndex = 0
+
+        while offset < totalBytes {
+            let remaining = totalBytes - offset
+            let clipBytes = min(bytesPerClip, remaining)
+            let clipData = audioData[audioData.startIndex + offset ..< audioData.startIndex + offset + clipBytes]
+
+            // Build WAV with updated data size
+            var wav = Data()
+            wav.append(contentsOf: "RIFF".utf8)
+            wav.appendLE(UInt32(36 + clipBytes))
+            wav.append(contentsOf: "WAVE".utf8)
+            wav.append(header[12..<44]) // fmt chunk from original
+            wav.append(contentsOf: "data".utf8)
+            wav.appendLE(UInt32(clipBytes))
+            wav.append(clipData)
+
+            let clipPath = (outputDir as NSString).appendingPathComponent("clip_\(clipIndex).wav")
+            try wav.write(to: URL(fileURLWithPath: clipPath))
+            paths.append(clipPath)
+
+            offset += clipBytes
+            clipIndex += 1
+        }
+
+        return paths
+    }
+
+    /// Filters out hallucinated repeated segments.
+    private func deduplicateSegments(_ segments: [WhisperSegmentOutput]) -> [WhisperSegmentOutput] {
+        guard segments.count > 1 else { return segments }
+        var result: [WhisperSegmentOutput] = []
+        var lastText = ""
+        var repeatCount = 0
+        let maxRepeats = 2
+
+        for seg in segments {
+            let trimmed = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == lastText {
+                repeatCount += 1
+                if repeatCount >= maxRepeats { continue }
+            } else {
+                repeatCount = 0
+                lastText = trimmed
+            }
+            // Skip obviously garbage segments (very short repeated tokens)
+            if trimmed.count < 3 { continue }
+            result.append(seg)
+        }
+        return result
+    }
+
     // MARK: - whisper.cpp CLI
 
     private func runWhisperCpp(wavPath: String, outputDir: String) async throws -> [WhisperSegmentOutput] {
@@ -174,6 +269,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
                 "-f", wavPath,
                 "-l", language,
                 "-t", "\(threads)",
+                "-mc", "0",  // no context carry-over between segments (prevents hallucination)
                 "-oj",
                 "-of", (outputDir as NSString).appendingPathComponent("whisper_out"),
                 "--no-prints"

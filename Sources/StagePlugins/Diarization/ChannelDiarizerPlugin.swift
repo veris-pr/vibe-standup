@@ -97,8 +97,11 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
         }
     }
 
+    private static let minTurnDuration: Double = 0.3
+
     private func mergeAdjacent(_ segments: [DiarizationSegment]) -> [DiarizationSegment] {
         guard !segments.isEmpty else { return [] }
+        // First pass: merge consecutive same-speaker segments
         var merged = [segments[0]]
         for i in 1..<segments.count {
             if segments[i].speaker == merged.last!.speaker {
@@ -107,7 +110,22 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
                 merged.append(segments[i])
             }
         }
-        return merged
+        // Second pass: absorb micro-turns (<0.3s) into their neighbors
+        guard merged.count > 1 else { return merged }
+        var debounced: [DiarizationSegment] = [merged[0]]
+        for i in 1..<merged.count {
+            let duration = merged[i].endTime - merged[i].startTime
+            if duration < Self.minTurnDuration, !debounced.isEmpty {
+                // Extend previous turn to cover this micro-turn
+                debounced[debounced.count - 1].endTime = merged[i].endTime
+            } else if merged[i].speaker == debounced.last?.speaker {
+                // Same speaker after absorbing a micro-turn — merge
+                debounced[debounced.count - 1].endTime = merged[i].endTime
+            } else {
+                debounced.append(merged[i])
+            }
+        }
+        return debounced
     }
 }
 

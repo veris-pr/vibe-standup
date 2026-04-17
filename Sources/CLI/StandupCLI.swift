@@ -48,7 +48,7 @@ struct InitCommand: AsyncParsableCommand {
     var skipModel: Bool = false
 
     @Option(name: .long, help: "Whisper model to download (tiny, base, small, medium, large)")
-    var model: String = "base.en"
+    var model: String = "small"
 
     @Flag(name: .long, help: "Show what would be done without making changes")
     var dryRun: Bool = false
@@ -285,7 +285,17 @@ struct InitCommand: AsyncParsableCommand {
             }
 
             if fm.fileExists(atPath: dstPath) {
-                printOK("Pipeline exists: \(file)")
+                let srcData = fm.contents(atPath: srcPath)
+                let dstData = fm.contents(atPath: dstPath)
+                if srcData == dstData {
+                    printOK("Pipeline up to date: \(file)")
+                } else if dryRun {
+                    printDry("Update \(file) (bundled version differs)")
+                } else {
+                    try fm.removeItem(atPath: dstPath)
+                    try fm.copyItem(atPath: srcPath, toPath: dstPath)
+                    printOK("Updated pipeline: \(file)")
+                }
             } else if dryRun {
                 printDry("cp \(srcPath) \(dstPath)")
             } else {
@@ -642,83 +652,84 @@ struct StartCommand: AsyncParsableCommand {
             let pidFile = config.activeSessionFile + ".pid"
             try "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: pidFile, atomically: true, encoding: .utf8)
 
-            let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-            signal(SIGINT, SIG_IGN)
-            sigSource.setEventHandler {
-                sigSource.cancel()
-                Task {
-                    var sessionId: String? = session.id
-                    do {
-                        let stopped = try await sessionService.stopSession()
-                        sessionId = stopped.id
-                        print("\n■ Session \(stopped.id) stopped")
+            // Store continuation so SIGINT handler can resume it (avoids continuation leak warning)
+            let exitCode: Int32 = await withCheckedContinuation { continuation in
+                let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+                signal(SIGINT, SIG_IGN)
+                sigSource.setEventHandler {
+                    sigSource.cancel()
+                    Task {
+                        var sessionId: String? = session.id
+                        var code: Int32 = 0
+                        do {
+                            let stopped = try await sessionService.stopSession()
+                            sessionId = stopped.id
+                            print("\n■ Session \(stopped.id) stopped")
 
-                        // Count chunks
-                        let chunksDir = stopped.chunksPath
-                        let chunkCount = (try? FileManager.default.contentsOfDirectory(atPath: chunksDir).filter { $0.hasSuffix(".pcm") }.count) ?? 0
-                        print("■ Captured \(chunkCount) audio chunks")
+                            // Count chunks
+                            let chunksDir = stopped.chunksPath
+                            let chunkCount = (try? FileManager.default.contentsOfDirectory(atPath: chunksDir).filter { $0.hasSuffix(".pcm") }.count) ?? 0
+                            print("■ Captured \(chunkCount) audio chunks")
 
-                        if !definition.stages.isEmpty {
-                            print("\n⚙ Running pipeline: \(pipeline)")
-                            for (i, stage) in definition.stages.enumerated() {
-                                print("  [\(i+1)/\(definition.stages.count)] \(stage.id) (\(stage.pluginId))...")
-                            }
-                            print()
-
-                            try await pipelineService.executeStages(definition: definition, session: stopped)
-                            try sessionService.markComplete(sessionId: stopped.id)
-
-                            // Surface warnings from pipeline output
-                            let pipelineWarnings = Self.collectPipelineWarnings(sessionPath: stopped.directoryPath, definition: definition)
-                            if pipelineWarnings.isEmpty {
-                                print("✓ Pipeline complete!")
-                            } else {
-                                print("⚠ Pipeline complete with warnings:")
-                                for warning in pipelineWarnings {
-                                    print("  ⚠ \(warning)")
+                            if !definition.stages.isEmpty {
+                                print("\n⚙ Running pipeline: \(pipeline)")
+                                for (i, stage) in definition.stages.enumerated() {
+                                    print("  [\(i+1)/\(definition.stages.count)] \(stage.id) (\(stage.pluginId))...")
                                 }
-                            }
-                            print("✓ Results in: \(stopped.directoryPath)")
+                                print()
 
-                            // Show output artifacts
-                            let fm = FileManager.default
-                            if let dirs = try? fm.contentsOfDirectory(atPath: stopped.directoryPath).sorted() {
-                                for dir in dirs {
-                                    let dirPath = (stopped.directoryPath as NSString).appendingPathComponent(dir)
-                                    var isDir: ObjCBool = false
-                                    if fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue, dir != "chunks" {
-                                        let files = (try? fm.contentsOfDirectory(atPath: dirPath)) ?? []
-                                        for file in files.sorted() {
-                                            print("  └─ \(dir)/\(file)")
+                                try await pipelineService.executeStages(definition: definition, session: stopped)
+                                try sessionService.markComplete(sessionId: stopped.id)
+
+                                // Surface warnings from pipeline output
+                                let pipelineWarnings = Self.collectPipelineWarnings(sessionPath: stopped.directoryPath, definition: definition)
+                                if pipelineWarnings.isEmpty {
+                                    print("✓ Pipeline complete!")
+                                } else {
+                                    print("⚠ Pipeline complete with warnings:")
+                                    for warning in pipelineWarnings {
+                                        print("  ⚠ \(warning)")
+                                    }
+                                }
+                                print("✓ Results in: \(stopped.directoryPath)")
+
+                                // Show output artifacts
+                                let fm = FileManager.default
+                                if let dirs = try? fm.contentsOfDirectory(atPath: stopped.directoryPath).sorted() {
+                                    for dir in dirs {
+                                        let dirPath = (stopped.directoryPath as NSString).appendingPathComponent(dir)
+                                        var isDir: ObjCBool = false
+                                        if fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue, dir != "chunks" {
+                                            let files = (try? fm.contentsOfDirectory(atPath: dirPath)) ?? []
+                                            for file in files.sorted() {
+                                                print("  └─ \(dir)/\(file)")
+                                            }
                                         }
                                     }
                                 }
+                            } else {
+                                try sessionService.markComplete(sessionId: stopped.id)
+                                print("✓ Session complete. Audio in: \(stopped.chunksPath)")
                             }
-                        } else {
-                            try sessionService.markComplete(sessionId: stopped.id)
-                            print("✓ Session complete. Audio in: \(stopped.chunksPath)")
+                        } catch {
+                            print("\n✗ Error while stopping session or running pipeline: \(error.localizedDescription)")
+                            if let id = sessionId {
+                                try? sessionService.markFailed(sessionId: id)
+                            }
+                            code = 1
                         }
-                    } catch {
-                        print("\n✗ Error while stopping session or running pipeline: \(error.localizedDescription)")
-                        if let id = sessionId {
-                            try? sessionService.markFailed(sessionId: id)
-                        }
+
                         try? FileManager.default.removeItem(atPath: config.activeSessionFile)
                         try? FileManager.default.removeItem(atPath: config.activeSessionFile + ".pid")
-                        Foundation.exit(1)
+                        continuation.resume(returning: code)
                     }
-
-                    try? FileManager.default.removeItem(atPath: config.activeSessionFile)
-                    try? FileManager.default.removeItem(atPath: config.activeSessionFile + ".pid")
-                    Foundation.exit(0)
                 }
+                sigSource.resume()
             }
-            sigSource.resume()
 
-            // Suspend this async task forever — the SIGINT handler calls exit(0).
-            // Using withCheckedContinuation avoids blocking the cooperative thread pool
-            // (dispatchMain() would SIGTRAP by hijacking a cooperative thread).
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            if exitCode != 0 {
+                throw ExitCode(exitCode)
+            }
         } catch {
             if let captureError = error as? AudioCaptureError {
                 switch captureError {
