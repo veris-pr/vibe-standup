@@ -1,0 +1,74 @@
+# Standup Comics Pipeline — Google Cloud
+# Uses Google Cloud services instead of local models:
+#   ASR:   Google Cloud Speech-to-Text
+#   LLM:   Gemini 2.0 Flash via Vertex AI
+#   Image: Imagen 3 via Vertex AI
+#
+# Prerequisites:
+#   1. gcloud CLI installed and authenticated (`gcloud auth login`)
+#   2. Vertex AI API enabled in your GCP project
+#   3. Speech-to-Text API enabled in your GCP project
+#   4. Set GOOGLE_CLOUD_PROJECT in ~/.standup/.env or pipeline config
+#
+# Usage:
+#   cp pipelines/standup-comics-google.yaml ~/.standup/pipelines/
+#   standup start --pipeline standup-comics-google
+
+name: standup-comics-google
+description: Generate superhero comics from standup meetings (Google Cloud)
+
+live:
+  mic:
+    - plugin: noise-gate
+      config:
+        threshold_db: "-40"
+        hold_ms: "100"
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+  system:
+    - plugin: normalize
+      config:
+        target_lufs: "-16"
+
+stages:
+  - id: transcribe
+    plugin: google-stt
+    input: audio_chunks
+    config:
+      # project: my-gcp-project  # or set GOOGLE_CLOUD_PROJECT env var
+      language: hi-IN
+      region: us-central1
+
+  - id: diarize
+    plugin: channel-diarizer
+    input: audio_chunks
+
+  - id: clean-transcript
+    plugin: google-llm
+    inputs:
+      - transcribe.output
+      - diarize.output
+    config:
+      model: gemini-2.0-flash
+      region: us-central1
+
+  - id: comic-script
+    plugin: google-llm
+    input: clean-transcript.output
+    config:
+      model: gemini-2.0-flash
+      region: us-central1
+
+  - id: panel-render
+    plugin: google-image-gen
+    input: comic-script.output
+    config:
+      model: imagen-3.0-generate-001
+      region: us-central1
+
+  - id: comic-assemble
+    plugin: comic-renderer
+    inputs:
+      - comic-script.output
+      - panel-render.output

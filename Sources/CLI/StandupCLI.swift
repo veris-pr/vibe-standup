@@ -1342,6 +1342,20 @@ struct DoctorCommand: AsyncParsableCommand {
             printInfo("No .env file — see .env.example for cloud plugin configuration")
         }
 
+        // Google Cloud (optional)
+        printStep("Google Cloud (optional)")
+        if let gcloudPath = GoogleCloudRunner.findGCloud() {
+            printOK("gcloud CLI: \(gcloudPath)")
+            let gcloud = GoogleCloudRunner(project: "check")
+            if await gcloud.checkAuth() {
+                printOK("Google Cloud authenticated")
+            } else {
+                printWarn("Google Cloud not authenticated — run `gcloud auth login`")
+            }
+        } else {
+            printInfo("gcloud CLI not installed — Google Cloud plugins unavailable (local-only is fine)")
+        }
+
         // Pipelines
         printStep("Pipelines")
         let yamlFiles = ((try? fm.contentsOfDirectory(atPath: config.pipelinesDirectory)) ?? [])

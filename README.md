@@ -464,6 +464,10 @@ All config values are strings in the YAML, parsed by these typed accessors.
 | `bedrock-transcribe` | audio chunks → transcription segments | Amazon Transcribe via AWS CLI (batch S3 job) |
 | `bedrock-llm` | clean transcript → comic script | Claude Haiku via Bedrock |
 | `bedrock-image-gen` | comic script → panel images | Stability AI SDXL via Bedrock |
+| **Cloud (Google Cloud)** | | |
+| `google-stt` | audio chunks → transcription segments | Google Cloud Speech-to-Text |
+| `google-llm` | clean transcript → comic script | Gemini via Vertex AI |
+| `google-image-gen` | comic script → panel images | Imagen via Vertex AI |
 
 ---
 
@@ -1043,17 +1047,17 @@ performance:
   whisper_model: mlx-community/whisper-large-v3-turbo
 ```
 
-## Cloud Plugins (AWS Bedrock)
+## Cloud Plugins
 
-Every local plugin has a cloud-backed alternative using AWS Bedrock. Swap plugins in your YAML — the pipeline contract stays the same.
+Every local plugin has cloud-backed alternatives. Swap plugin names in your YAML — the pipeline contract stays the same.
 
-| Local Plugin | Cloud Plugin | AWS Service |
-|---|---|---|
-| `mlx-whisper` | `bedrock-transcribe` | Amazon Transcribe |
-| `transcript-cleaner` / `comic-script` | `bedrock-llm` | Claude Haiku via Bedrock |
-| `image-gen` | `bedrock-image-gen` | Stability AI SDXL via Bedrock |
+| Capability | Local | AWS Bedrock | Google Cloud |
+|---|---|---|---|
+| Speech-to-text | `mlx-whisper` | `bedrock-transcribe` | `google-stt` |
+| LLM | `transcript-cleaner` / `comic-script` | `bedrock-llm` | `google-llm` |
+| Image generation | `image-gen` | `bedrock-image-gen` | `google-image-gen` |
 
-### Setup
+### AWS Bedrock Setup
 
 1. Install and configure AWS CLI:
    ```bash
@@ -1075,12 +1079,38 @@ Every local plugin has a cloud-backed alternative using AWS Bedrock. Swap plugin
    standup start --pipeline standup-comics-bedrock
    ```
 
+### Google Cloud Setup
+
+1. Install and authenticate gcloud CLI:
+   ```bash
+   brew install google-cloud-sdk
+   gcloud auth login
+   gcloud config set project YOUR_PROJECT_ID
+   ```
+
+2. Enable the required APIs in your GCP console:
+   - Vertex AI API (for Gemini LLM and Imagen)
+   - Cloud Speech-to-Text API
+
+3. Set your project in `~/.standup/.env`:
+   ```bash
+   cp .env.example ~/.standup/.env
+   # Set GOOGLE_CLOUD_PROJECT=your-project-id
+   ```
+
+4. Deploy the cloud pipeline:
+   ```bash
+   cp pipelines/standup-comics-google.yaml ~/.standup/pipelines/
+   standup start --pipeline standup-comics-google
+   ```
+
 ### Credential Security
 
 - Credentials are loaded from `~/.standup/.env` (never committed — `.env` is in `.gitignore`)
 - Existing environment variables take precedence over `.env` values
-- AWS named profiles (`AWS_PROFILE`) are recommended over raw keys
-- `standup doctor` checks AWS CLI and credential status
+- AWS: named profiles (`AWS_PROFILE`) recommended over raw keys
+- Google: `gcloud auth login` handles auth; service accounts via `GOOGLE_APPLICATION_CREDENTIALS`
+- `standup doctor` checks both AWS and Google Cloud status (optional — no failures if absent)
 
 See `.env.example` for all supported variables.
 

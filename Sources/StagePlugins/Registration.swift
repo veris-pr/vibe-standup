@@ -23,5 +23,10 @@ public enum StagePluginRegistration {
         registry.register(stage: "bedrock-transcribe") { BedrockTranscribePlugin() }
         registry.register(stage: "bedrock-llm") { BedrockLLMPlugin() }
         registry.register(stage: "bedrock-image-gen") { BedrockImageGenPlugin() }
+
+        // Cloud (Google Cloud) plugins
+        registry.register(stage: "google-stt") { GoogleSTTPlugin() }
+        registry.register(stage: "google-llm") { GoogleLLMPlugin() }
+        registry.register(stage: "google-image-gen") { GoogleImageGenPlugin() }
     }
 }
