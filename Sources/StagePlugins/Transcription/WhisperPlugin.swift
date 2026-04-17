@@ -207,12 +207,12 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
             let clipBytes = min(bytesPerClip, remaining)
             let clipData = audioData[audioData.startIndex + offset ..< audioData.startIndex + offset + clipBytes]
 
-            // Build WAV with updated data size
+            // Build WAV with updated data size (fmt chunk is bytes 12-35, skip original data header)
             var wav = Data()
             wav.append(contentsOf: "RIFF".utf8)
             wav.appendLE(UInt32(36 + clipBytes))
             wav.append(contentsOf: "WAVE".utf8)
-            wav.append(header[12..<44]) // fmt chunk from original
+            wav.append(header[12..<36])
             wav.append(contentsOf: "data".utf8)
             wav.appendLE(UInt32(clipBytes))
             wav.append(clipData)
@@ -295,7 +295,11 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
             throw WhisperError.transcriptionFailed("whisper-cpp produced no output JSON")
         }
 
-        let jsonData = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
+        let rawData = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
+        // Whisper may emit invalid UTF-8 for non-Latin scripts; sanitize before decoding
+        let sanitized = String(data: rawData, encoding: .utf8)
+            ?? String(decoding: rawData, as: UTF8.self)
+        let jsonData = Data(sanitized.utf8)
         let output = try JSONDecoder().decode(WhisperJSONOutput.self, from: jsonData)
 
         return output.transcription.map { seg in

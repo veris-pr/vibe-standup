@@ -37,7 +37,7 @@ public struct Session: Sendable, Codable, Equatable {
 
     /// Transition to processing state (session stopped, pipeline running).
     public mutating func markProcessing() throws {
-        guard status == .active || status == .failed else {
+        guard status == .active || status == .failed || status == .complete else {
             throw SessionError.invalidTransition(from: status, to: .processing)
         }
         status = .processing
@@ -46,7 +46,7 @@ public struct Session: Sendable, Codable, Equatable {
 
     /// Transition to complete state (pipeline finished successfully).
     public mutating func markComplete() throws {
-        guard status == .processing || status == .failed else {
+        guard status == .processing || status == .failed || status == .complete else {
             throw SessionError.invalidTransition(from: status, to: .complete)
         }
         status = .complete

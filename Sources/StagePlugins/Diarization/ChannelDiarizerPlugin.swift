@@ -10,6 +10,9 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
     override public var outputArtifacts: [ArtifactType] { [.diarizationLabels] }
 
     private var vadThresholdDB: Double = -40
+    // Mic must be this many times louder than system to count as "me" when both active.
+    // Prevents acoustic echo (speaker bleed into mic) from being labeled as user speech.
+    private static let micDominanceRatio: Float = 2.0
 
     public init() {
         super.init(id: "channel-diarizer")
@@ -61,7 +64,9 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
 
             let speaker: Speaker
             if micActive && sysActive {
-                speaker = micRMS > sysRMS ? .me : .them
+                // Both channels active — mic must clearly dominate to be "me".
+                // Otherwise it's likely acoustic echo from speakers into the mic.
+                speaker = micRMS > sysRMS * Self.micDominanceRatio ? .me : .them
             } else if micActive {
                 speaker = .me
             } else if sysActive {
