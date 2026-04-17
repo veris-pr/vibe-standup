@@ -41,14 +41,8 @@ struct InitCommand: AsyncParsableCommand {
         abstract: "Initialize Standup: install dependencies, download models, configure permissions"
     )
 
-    @Flag(name: .long, help: "Skip Homebrew dependency installation")
-    var skipBrew: Bool = false
-
-    @Flag(name: .long, help: "Skip whisper model download")
+    @Flag(name: .long, help: "Skip Python/mlx-whisper setup")
     var skipModel: Bool = false
-
-    @Option(name: .long, help: "Whisper model to download (tiny, base, small, medium, large)")
-    var model: String = "small"
 
     @Flag(name: .long, help: "Show what would be done without making changes")
     var dryRun: Bool = false
@@ -71,20 +65,12 @@ struct InitCommand: AsyncParsableCommand {
         printStep("Creating directory structure")
         try createDirectories(config: config, dryRun: dryRun)
 
-        // 3. Homebrew + whisper-cpp
-        if !skipBrew {
-            printStep("Checking Homebrew dependencies")
-            try await installBrewDependencies(dryRun: dryRun, checks: &checks)
-        } else {
-            printSkip("Homebrew installation (--skip-brew)")
-        }
-
-        // 4. Whisper model
+        // 3. Python + mlx-whisper
         if !skipModel {
-            printStep("Checking whisper model: \(model)")
-            try await downloadWhisperModel(modelName: model, config: config, dryRun: dryRun, checks: &checks)
+            printStep("Checking Python and mlx-whisper")
+            try await setupMlxWhisper(dryRun: dryRun, checks: &checks)
         } else {
-            printSkip("Whisper model download (--skip-model)")
+            printSkip("mlx-whisper setup (--skip-model)")
         }
 
         // 5. Copy bundled pipelines
@@ -144,7 +130,7 @@ struct InitCommand: AsyncParsableCommand {
         printOK("Architecture: Apple Silicon (arm64)")
         #else
         printWarn("Architecture: Intel (x86_64) — Apple Silicon recommended for performance")
-        checks.warnings.append("Intel architecture — whisper.cpp will be slower")
+        checks.warnings.append("Intel architecture — mlx-whisper requires Apple Silicon")
         #endif
     }
 
@@ -166,83 +152,51 @@ struct InitCommand: AsyncParsableCommand {
         }
     }
 
-    private func installBrewDependencies(dryRun: Bool, checks: inout CheckResults) async throws {
-        // Check Homebrew
-        let brewPath = findExecutable("brew")
-        guard let brew = brewPath else {
-            printFail("Homebrew not found — install from https://brew.sh")
-            checks.errors.append("Homebrew not installed")
+    private func setupMlxWhisper(dryRun: Bool, checks: inout CheckResults) async throws {
+        // Check for uv
+        let uvPath = findExecutable("uv")
+        guard let uv = uvPath else {
+            printFail("uv not found — install from https://docs.astral.sh/uv/getting-started/installation/")
+            checks.errors.append("uv not installed — required for mlx-whisper Python environment")
             return
         }
-        printOK("Homebrew found: \(brew)")
+        printOK("uv found: \(uv)")
 
-        // Check whisper-cpp
-        let whisperInstalled = findExecutable("whisper-cpp") != nil
-            || FileManager.default.fileExists(atPath: "/opt/homebrew/bin/whisper-cpp")
-            || FileManager.default.fileExists(atPath: "/usr/local/bin/whisper-cpp")
-
-        if whisperInstalled {
-            printOK("whisper-cpp already installed")
+        // Check for .venv
+        let projectRoot = FileManager.default.currentDirectoryPath
+        let venvPython = (projectRoot as NSString).appendingPathComponent(".venv/bin/python3")
+        if FileManager.default.fileExists(atPath: venvPython) {
+            printOK("Python venv: \(venvPython)")
         } else {
             if dryRun {
-                printDry("brew install whisper-cpp")
+                printDry("uv venv && uv add mlx-whisper")
             } else {
-                printProgress("Installing whisper-cpp via Homebrew...")
-                let (exitCode, output) = try await runProcess(brew, args: ["install", "whisper-cpp"])
-                if exitCode == 0 {
-                    printOK("whisper-cpp installed successfully")
+                printProgress("Creating Python venv and installing mlx-whisper...")
+                let (venvExit, _) = try await runProcess(uv, args: ["venv"])
+                guard venvExit == 0 else {
+                    printFail("Failed to create venv")
+                    checks.errors.append("uv venv failed")
+                    return
+                }
+                let (addExit, addOut) = try await runProcess(uv, args: ["add", "mlx-whisper"])
+                if addExit == 0 {
+                    printOK("mlx-whisper installed in .venv/")
                 } else {
-                    printFail("whisper-cpp installation failed")
-                    if !output.isEmpty { print("  \(output.prefix(200))") }
-                    checks.warnings.append("whisper-cpp install failed — transcription will use placeholder")
+                    printFail("mlx-whisper installation failed")
+                    if !addOut.isEmpty { print("  \(addOut.prefix(200))") }
+                    checks.errors.append("mlx-whisper install failed")
+                    return
                 }
             }
         }
-    }
 
-    private func downloadWhisperModel(modelName: String, config: StandupConfig, dryRun: Bool, checks: inout CheckResults) async throws {
-        let modelsDir = (config.baseDirectory as NSString).appendingPathComponent("models")
-        let modelFile = "ggml-\(modelName).bin"
-        let modelPath = (modelsDir as NSString).appendingPathComponent(modelFile)
-
-        // Also check Homebrew's model directory
-        let brewModelPath = "/opt/homebrew/share/whisper-cpp/models/\(modelFile)"
-
-        if FileManager.default.fileExists(atPath: modelPath) {
-            printOK("Model exists: \(modelPath)")
-            return
-        }
-        if FileManager.default.fileExists(atPath: brewModelPath) {
-            printOK("Model exists (Homebrew): \(brewModelPath)")
-            return
-        }
-
-        let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(modelFile)"
-
-        if dryRun {
-            printDry("curl -L \(url) -o \(modelPath)")
-            return
-        }
-
-        printProgress("Downloading \(modelFile) from Hugging Face...")
-        printProgress("URL: \(url)")
-        printProgress("Destination: \(modelPath)")
-
-        let (exitCode, _) = try await runProcess("/usr/bin/curl", args: [
-            "-L", "--progress-bar", "-o", modelPath, url
-        ])
-
-        if exitCode == 0 && FileManager.default.fileExists(atPath: modelPath) {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: modelPath),
-               let size = attrs[.size] as? Int {
-                let mb = Double(size) / 1_048_576
-                printOK("Model downloaded: \(modelFile) (\(String(format: "%.0f", mb)) MB)")
-            } else {
-                printOK("Model downloaded: \(modelFile)")
-            }
+        // Check script exists
+        let scriptPath = (projectRoot as NSString).appendingPathComponent("scripts/mlx_whisper_infer.py")
+        if FileManager.default.fileExists(atPath: scriptPath) {
+            printOK("Inference script: \(scriptPath)")
         } else {
-            printFail("Model download failed — transcription will use placeholder")
-            checks.warnings.append("Whisper model download failed")
+            printFail("scripts/mlx_whisper_infer.py not found")
+            checks.warnings.append("mlx-whisper inference script missing")
         }
     }
 
@@ -764,8 +718,10 @@ struct StartCommand: AsyncParsableCommand {
         var warnings: [String] = []
         let fm = FileManager.default
 
-        let whisperStageIds = definition.stages.filter { $0.pluginId == "whisper" }.map(\.id)
-        for stageId in whisperStageIds {
+        let transcribeStageIds = definition.stages.filter {
+            $0.pluginId == "mlx-whisper"
+        }.map(\.id)
+        for stageId in transcribeStageIds {
             let segmentsPath = ((sessionPath as NSString).appendingPathComponent(stageId) as NSString)
                 .appendingPathComponent("segments.json")
             guard let data = fm.contents(atPath: segmentsPath),
@@ -774,15 +730,7 @@ struct StartCommand: AsyncParsableCommand {
             }
 
             if segments.isEmpty {
-                warnings.append("Transcription produced 0 segments — audio may be silent or whisper unavailable")
-                continue
-            }
-
-            let hasPlaceholder = segments.contains {
-                (($0["text"] as? String) ?? "").contains("requires whisper-cpp")
-            }
-            if hasPlaceholder {
-                warnings.append("Transcription used placeholder output — install whisper-cpp and a model for real transcripts")
+                warnings.append("Transcription produced 0 segments — audio may be silent or mlx-whisper unavailable")
             }
         }
 
@@ -1306,26 +1254,24 @@ struct DoctorCommand: AsyncParsableCommand {
             issues.append("Config file missing")
         }
 
-        // whisper-cpp
-        printStep("Transcription (whisper-cpp)")
-        let whisperBin = findExecutable("whisper-cli") ?? findExecutable("whisper-cpp")
-        if let path = whisperBin {
-            printOK("whisper binary: \(path)")
+        // mlx-whisper
+        printStep("Transcription (mlx-whisper)")
+        let projectRoot = FileManager.default.currentDirectoryPath
+        let venvPython = (projectRoot as NSString).appendingPathComponent(".venv/bin/python3")
+        let inferScript = (projectRoot as NSString).appendingPathComponent("scripts/mlx_whisper_infer.py")
+
+        if fm.fileExists(atPath: venvPython) {
+            printOK("Python venv: \(venvPython)")
         } else {
-            printFail("whisper-cpp not found")
-            issues.append("whisper-cpp not installed — run `standup init` or `brew install whisper-cpp`")
+            printFail("Python venv not found — run `uv venv && uv add mlx-whisper`")
+            issues.append("mlx-whisper venv missing — run `standup init`")
         }
 
-        let modelsDir = (config.baseDirectory as NSString).appendingPathComponent("models")
-        let brewModelsDir = "/opt/homebrew/share/whisper-cpp/models"
-        let modelFiles = ((try? fm.contentsOfDirectory(atPath: modelsDir)) ?? [])
-            + ((try? fm.contentsOfDirectory(atPath: brewModelsDir)) ?? [])
-        let ggmlModels = modelFiles.filter { $0.hasPrefix("ggml-") && $0.hasSuffix(".bin") }
-        if ggmlModels.isEmpty {
-            printFail("No whisper models found")
-            issues.append("No whisper models — run `standup init`")
+        if fm.fileExists(atPath: inferScript) {
+            printOK("Inference script: \(inferScript)")
         } else {
-            for m in Set(ggmlModels).sorted() { printOK("Model: \(m)") }
+            printFail("scripts/mlx_whisper_infer.py not found")
+            issues.append("mlx-whisper inference script missing")
         }
 
         // Ollama

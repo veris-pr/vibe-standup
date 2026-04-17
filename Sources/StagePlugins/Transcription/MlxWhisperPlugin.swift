@@ -6,6 +6,35 @@
 import Foundation
 import StandupCore
 
+// MARK: - Shared types
+
+public enum TranscriptionError: Error, LocalizedError, Sendable {
+    case transcriptionFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .transcriptionFailed(let msg): "Transcription failed: \(msg)"
+        }
+    }
+}
+
+// TranscriptionSegment is defined in TranscriptMergerPlugin.swift (shared within StagePlugins target)
+
+// MARK: - Data helpers for WAV construction
+
+extension Data {
+    mutating func appendLE(_ value: UInt16) {
+        var v = value.littleEndian
+        append(Data(bytes: &v, count: 2))
+    }
+    mutating func appendLE(_ value: UInt32) {
+        var v = value.littleEndian
+        append(Data(bytes: &v, count: 4))
+    }
+}
+
+// MARK: - Plugin
+
 public final class MlxWhisperPlugin: BaseStagePlugin, @unchecked Sendable {
     override public var inputArtifacts: [ArtifactType] { [.audioChunks] }
     override public var outputArtifacts: [ArtifactType] { [.transcriptionSegments] }
@@ -45,7 +74,7 @@ public final class MlxWhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
         guard FileManager.default.fileExists(atPath: pythonPath),
               FileManager.default.fileExists(atPath: scriptPath) else {
-            throw WhisperError.transcriptionFailed(
+            throw TranscriptionError.transcriptionFailed(
                 "mlx-whisper not found. Run: cd \(projectRoot()) && uv venv && uv add mlx-whisper"
             )
         }
@@ -54,7 +83,7 @@ public final class MlxWhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         try await runMlxWhisper(wavPath: mergedWAV, outputPath: segmentsJSON)
 
         let rawData = try Data(contentsOf: URL(fileURLWithPath: segmentsJSON))
-        var segments = try JSONDecoder().decode([WhisperSegmentOutput].self, from: rawData)
+        var segments = try JSONDecoder().decode([TranscriptionSegment].self, from: rawData)
         segments = deduplicateSegments(segments)
 
         let outputPath = (outputDir as NSString).appendingPathComponent("segments.json")
@@ -95,19 +124,19 @@ public final class MlxWhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
         guard status == 0 else {
             let msg = String(data: stderrData, encoding: .utf8) ?? "unknown error"
-            throw WhisperError.transcriptionFailed("mlx-whisper exited with code \(status): \(msg)")
+            throw TranscriptionError.transcriptionFailed("mlx-whisper exited with code \(status): \(msg)")
         }
 
         guard FileManager.default.fileExists(atPath: outputPath) else {
-            throw WhisperError.transcriptionFailed("mlx-whisper produced no output")
+            throw TranscriptionError.transcriptionFailed("mlx-whisper produced no output")
         }
     }
 
     // MARK: - Deduplication
 
-    private func deduplicateSegments(_ segments: [WhisperSegmentOutput]) -> [WhisperSegmentOutput] {
+    private func deduplicateSegments(_ segments: [TranscriptionSegment]) -> [TranscriptionSegment] {
         guard segments.count > 1 else { return segments }
-        var result: [WhisperSegmentOutput] = []
+        var result: [TranscriptionSegment] = []
         var lastText = ""
         var repeatCount = 0
         let maxRepeats = 2
@@ -168,7 +197,7 @@ public final class MlxWhisperPlugin: BaseStagePlugin, @unchecked Sendable {
         }
 
         guard !allSamples.isEmpty else {
-            throw WhisperError.transcriptionFailed("No audio chunks found in \(chunksDir)")
+            throw TranscriptionError.transcriptionFailed("No audio chunks found in \(chunksDir)")
         }
 
         let sampleRate: UInt32 = 48000

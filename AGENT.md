@@ -2,7 +2,7 @@
 
 ## What This Is
 
-macOS CLI app: captures mic + system audio, processes through plugin pipelines. Swift 6, DDD architecture, SPM build system. Primary demo pipeline: standup-comics (6 stages: whisper → diarize → merge → comic-script → image-gen → comic-renderer).
+macOS CLI app: captures mic + system audio, processes through plugin pipelines. Swift 6, DDD architecture, SPM build system. Primary demo pipeline: standup-comics-mlx (6 stages: mlx-whisper → diarize → merge → comic-script → image-gen → comic-renderer).
 
 ## Build & Test
 
@@ -50,17 +50,19 @@ Sources/
 │   ├── Normalization/        # LUFS, Peak + Factory
 │   └── Registration.swift    # Factory-based registration of all live plugins
 ├── StagePlugins/             # Post-session processing plugins
-│   ├── Transcription/        # WhisperPlugin (whisper-cpp subprocess)
+│   ├── Transcription/        # MlxWhisperPlugin (mlx-whisper via Python subprocess)
 │   ├── Diarization/          # ChannelDiarizer, EnergyDiarizer + Factory
 │   ├── TranscriptMerger/     # Aligns transcription + diarization
 │   ├── Comic/                # ComicFormatter, ComicScript (Ollama), ImageGen (mflux), ComicRenderer (HTML)
 │   └── Registration.swift    # Factory-based registration of all stage plugins
-├── CLI/                      # StandupCLI.swift — all commands (init, doctor, start, stop, list, show, setup)
+├── CLI/                      # StandupCLI.swift — all commands (init, doctor, start, stop, resume, session, cleanup, setup)
 Tests/
 └── StandupTests/             # 25 tests (unit + integration + E2E)
 pipelines/                    # YAML pipeline definitions
-├── standup-comics.yaml       # 6-stage: whisper → diarize → merge → comic-script → image-gen → comic-renderer
+├── standup-comics-mlx.yaml   # 6-stage: mlx-whisper → diarize → merge → comic-script → image-gen → comic-renderer
 └── meeting-todos.yaml        # Planned pipeline — not installed until action-extractor + todo-pusher plugins ship
+scripts/
+└── mlx_whisper_infer.py      # Python wrapper for mlx-whisper inference
 ```
 
 ## Key File: PluginContracts.swift
@@ -108,7 +110,7 @@ pipelines/                    # YAML pipeline definitions
 
 Live plugins: `noise-gate`, `spectral-noise`, `wiener-noise`, `lufs-normalize`, `peak-normalize`
 Live factories: `noise-reduction` (strategies: gate, spectral, wiener), `normalize` (strategies: lufs, peak)
-Stage plugins: `whisper`, `channel-diarizer`, `energy-diarizer`, `transcript-merger`, `comic-formatter`, `comic-script`, `image-gen`, `comic-renderer`
+Stage plugins: `mlx-whisper`, `channel-diarizer`, `energy-diarizer`, `transcript-merger`, `comic-formatter`, `comic-script`, `image-gen`, `comic-renderer`
 Stage factories: `diarizer` (strategies: channel, energy)
 
 ## How to Add a New Live Plugin
@@ -214,7 +216,7 @@ Stage wiring: `artifacts[stage.id] = output` after each stage. Next stage looks 
 - `Yams` 5.1+ (YAML parsing)
 
 ### External Tools (installed by `standup init`)
-- `whisper-cpp` via Homebrew — transcription (falls back to placeholder segments)
+- `uv` + `mlx-whisper` in project `.venv/` — Apple Silicon–native transcription via MLX
 - `ollama` via Homebrew + `gemma3:4b` model — LLM comic script generation (falls back to heuristic)
 - `mflux` via Python venv at `~/.standup/venv/` — image generation (falls back to SVG placeholders)
 
@@ -225,17 +227,16 @@ Stage wiring: `artifacts[stage.id] = output` after each stage. Next stage looks 
 ├── config.yaml
 ├── standup.db
 ├── active_session          # Transient: contains active session ID
-├── models/ggml-base.en.bin
 ├── pipelines/*.yaml
 ├── plugins/                # External plugin search path
 ├── venv/                   # Python venv for mflux
 │   └── bin/mflux-generate
 └── sessions/<id>/
     ├── chunks/             # Raw PCM
-    ├── whisper/            # Transcription output
-    ├── channel-diarizer/   # Speaker labels
-    ├── transcript-merger/  # Clean transcript
+    ├── transcribe/         # Transcription output (segments.json)
+    ├── diarize/            # Speaker labels
+    ├── clean-transcript/   # Clean transcript
     ├── comic-script/       # LLM-generated script
-    ├── image-gen/          # Panel images + manifest
-    └── comic-renderer/     # Final HTML comic
+    ├── panel-render/       # Panel images + manifest
+    └── comic-assemble/     # Final HTML comic
 ```

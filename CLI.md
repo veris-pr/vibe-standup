@@ -11,31 +11,20 @@ First-time setup. Run this once after building.
 ```bash
 standup init                    # Full setup
 standup init --dry-run          # Preview without making changes
-standup init --model small.en   # Use a larger whisper model
-standup init --skip-brew        # Skip Homebrew dependency install
-standup init --skip-model       # Skip whisper model download
+standup init --skip-model       # Skip mlx-whisper Python setup
 ```
 
 **What it does:**
 1. Verifies macOS 14+, Swift, and architecture
 2. Creates `~/.standup/` with subdirectories (sessions, pipelines, plugins, models)
-3. Installs `whisper-cpp` via Homebrew
-4. Downloads the whisper GGML model from Hugging Face
-5. Installs Ollama via Homebrew, starts the service, and pulls `gemma3:4b`
+3. Sets up Python venv with `mlx-whisper` for transcription
+4. Installs Ollama via Homebrew, starts the service, and pulls `gemma3:4b`
 6. Creates a Python venv at `~/.standup/venv/` and installs `mflux`
 7. Copies bundled pipeline YAML files to `~/.standup/pipelines/`
 8. Writes default `~/.standup/config.yaml`
 9. Reports macOS permission requirements
 
-**Whisper model sizes:**
-
-| Model | Size | Speed | Accuracy |
-|---|---|---|---|
-| `tiny.en` | ~75 MB | Fastest | Lower |
-| `base.en` | ~142 MB | Fast | Good (default) |
-| `small.en` | ~466 MB | Medium | Better |
-| `medium.en` | ~1.5 GB | Slow | High |
-| `large` | ~2.9 GB | Slowest | Highest |
+mlx-whisper uses `mlx-community/whisper-large-v3-turbo` by default (1.6 GB, auto-downloaded on first run). Configure via pipeline YAML `config.model`.
 
 ### `standup start`
 
@@ -138,7 +127,7 @@ standup doctor
 **Checks:**
 - macOS version and architecture
 - `~/.standup/` directory structure and config
-- whisper-cpp binary and GGML models
+- mlx-whisper Python venv and inference script
 - Ollama installation, service status, and pulled models
 - mflux-generate availability
 - Installed pipelines
@@ -161,7 +150,7 @@ $ standup start --pipeline comics
 
 ■ Session abc123 stopped
 ⚙ Running pipeline: comics
-  → transcribe (whisper)
+  → transcribe (mlx-whisper)
   → diarize (channel-diarizer)
   → clean-transcript (transcript-merger)
   → comic-formatter
@@ -176,10 +165,8 @@ $ standup start --pipeline comics
 ├── config.yaml          # Global configuration
 ├── standup.db           # SQLite session database
 ├── active_session       # File containing active session ID (transient)
-├── models/
-│   └── ggml-base.en.bin # Whisper GGML model
 ├── pipelines/
-│   └── standup-comics.yaml
+│   └── standup-comics-mlx.yaml
 ├── plugins/             # External plugin search path
 └── sessions/
     └── <session-id>/
@@ -187,7 +174,7 @@ $ standup start --pipeline comics
         │   ├── 000001_mic.pcm
         │   ├── 000001_system.pcm
         │   └── ...
-        ├── transcribe/  # Whisper output
+        ├── transcribe/  # mlx-whisper output
         │   └── segments.json
         ├── diarize/     # Diarization output
         │   └── segments.json
@@ -219,11 +206,8 @@ performance:
   # Max RSS for stage subprocesses (MB)
   stage_max_rss_mb: 512
 
-  # Threads for whisper.cpp
-  whisper_threads: 4
-
-  # Whisper model name
-  whisper_model: base.en
+  # mlx-whisper model
+  whisper_model: mlx-community/whisper-large-v3-turbo
 ```
 
 ## Pipeline YAML Format
@@ -249,7 +233,7 @@ live:
 # Stage plugins — run as DAG after capture stops
 stages:
   - id: transcribe              # Unique stage ID
-    plugin: whisper             # Plugin to run
+    plugin: mlx-whisper             # Plugin to run
     input: audio_chunks         # Special: raw audio chunks
     config:
       model: base.en
@@ -300,9 +284,10 @@ standup start --pipeline my-meeting
 - Grant Screen Recording permission for system audio capture
 - Check that your audio input device is active
 
-### "Transcription requires whisper-cpp"
-- Run `standup init` to install whisper-cpp and download the model
-- Or manually: `brew install whisper-cpp`
+### "Transcription failed"
+- Ensure Python venv is set up: `cd <project-root> && uv venv && uv add mlx-whisper`
+- Check `scripts/mlx_whisper_infer.py` exists
+- Requires Apple Silicon (M1/M2/M3)
 
 ### "Session not found"
 - Run `standup list` to see available sessions

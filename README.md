@@ -1,6 +1,6 @@
 # Standup
 
-**Local-first meeting audio capture and processing for macOS.** Record mic + system audio, transcribe with Whisper, identify speakers, and generate outputs — all through a plugin pipeline you define in YAML.
+**Local-first meeting audio capture and processing for macOS.** Record mic + system audio, transcribe with mlx-whisper, identify speakers, and generate outputs — all through a plugin pipeline you define in YAML.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS_14+-blue" />
@@ -13,7 +13,7 @@
 
 Most meeting tools are cloud-first black boxes. Standup is the opposite:
 
-- **Local-first** — Whisper.cpp, Ollama, and mflux run on your machine. Audio never leaves your computer.
+- **Local-first** — mlx-whisper, Ollama, and mflux run on your machine. Audio never leaves your computer.
 - **Plugin-based** — Every processing step is a swappable plugin with a fixed contract.
 - **Pipeline-driven** — Define your workflow in YAML. Stages form a DAG with automatic dependency resolution.
 - **Dual-channel audio** — Mic and system audio captured separately, enabling true speaker diarization without ML.
@@ -36,7 +36,7 @@ Most meeting tools are cloud-first black boxes. Standup is the opposite:
                          ▼
 ┌────────────── Stage Pipeline (DAG) ──────────────┐
 │                                                   │
-│  audio_chunks ──→ Whisper (transcribe)            │
+│  audio_chunks ──→ mlx-whisper (transcribe)         │
 │               ──→ ChannelDiarizer (who spoke)     │
 │                         │          │              │
 │                         ▼          ▼              │
@@ -104,7 +104,7 @@ swift run standup init
 
 `standup init` handles everything automatically:
 
-1. Installs `whisper-cpp` via Homebrew and downloads the GGML model
+1. Sets up Python venv with `mlx-whisper` for Apple Silicon–native transcription
 2. Installs `ollama` via Homebrew, starts the service, and pulls `gemma3:4b`
 3. Creates a Python venv at `~/.standup/venv/` and installs `mflux`
 4. Creates `~/.standup/` directory structure, copies pipelines, writes config
@@ -113,9 +113,7 @@ All steps are idempotent — safe to re-run. Use `--dry-run` to preview.
 
 ```bash
 standup init --dry-run           # Preview without changes
-standup init --model small.en    # Larger whisper model (better accuracy, slower)
-standup init --skip-brew         # Skip Homebrew installs
-standup init --skip-model        # Skip whisper model download
+standup init --skip-model        # Skip mlx-whisper setup
 ```
 
 ### macOS Permissions
@@ -172,7 +170,7 @@ Standup uses **Domain-Driven Design** with clean layer separation:
 4. Chunks written: chunks/000001_mic.pcm, chunks/000001_system.pcm, ...
 5. User stops session (Ctrl+C or standup stop)
 6. Pipeline stages execute as DAG:
-   a. transcribe: PCM → WAV → whisper-cpp → segments.json
+   a. transcribe: PCM → WAV → mlx-whisper → segments.json
    b. diarize: PCM RMS analysis → speakers.json (me/them from separate channels)
    c. clean-transcript: merge segments + speakers → transcript.json
    d. comic-script: transcript → Ollama (gemma3:4b) → script.json with panels
@@ -205,7 +203,7 @@ Run after capture stops. Can be Swift or any executable via the subprocess bridg
 
 | Plugin | Input | Output | What It Does |
 |---|---|---|---|
-| `whisper` | audio chunks | transcription segments | Runs whisper.cpp as subprocess |
+| `mlx-whisper` | audio chunks | transcription segments | Runs mlx-whisper via Python subprocess |
 | `channel-diarizer` | audio chunks | speaker labels | Per-channel RMS → me/them labels |
 | `energy-diarizer` | audio chunks | speaker labels | Energy pattern analysis (fallback) |
 | `transcript-merger` | segments + labels | clean transcript | Time-aligned speaker dialogue |
@@ -234,7 +232,7 @@ live:
 
 stages:
   - id: transcribe
-    plugin: whisper
+    plugin: mlx-whisper
     input: audio_chunks
 
   - id: diarize
@@ -322,7 +320,7 @@ description: Extract action items from meetings
 
 stages:
   - id: transcribe
-    plugin: whisper
+    plugin: mlx-whisper
     input: audio_chunks
 
   - id: diarize
@@ -353,7 +351,7 @@ Run with: `standup start --pipeline my-meeting`
 |---|---|---|
 | Language | Swift 6 (strict concurrency) | Native macOS performance, type safety |
 | Audio capture | AVAudioEngine + ScreenCaptureKit | macOS native, dual-channel |
-| Transcription | whisper.cpp | Local, open-source, fast on Apple Silicon |
+| Transcription | mlx-whisper (MLX framework) | Local, open-source, fast on Apple Silicon |
 | LLM | Ollama (gemma3:4b) | Local inference, no API keys |
 | Image gen | mflux (FLUX on MLX) | Apple Silicon optimized diffusion |
 | Persistence | SQLite (via SQLite.swift) | Lightweight, zero-config |
@@ -369,8 +367,8 @@ performance:
   max_live_plugin_latency_ms: 10   # Budget per live plugin chain
   stage_max_parallel: 2            # Concurrent stage execution
   stage_max_rss_mb: 512            # Memory limit for subprocesses
-  whisper_threads: 4               # CPU threads for whisper.cpp
-  whisper_model: base.en           # tiny.en | base.en | small.en | medium.en | large
+  # mlx-whisper model (HuggingFace repo)
+  whisper_model: mlx-community/whisper-large-v3-turbo
 ```
 
 ## CLI Commands
@@ -395,7 +393,7 @@ See [CLI.md](CLI.md) for the full command reference.
 │   ├── 000001_mic.pcm
 │   ├── 000001_system.pcm
 │   └── ...
-├── whisper/
+├── transcribe/
 │   └── segments.json          # Transcription segments
 ├── channel-diarizer/
 │   └── segments.json          # Speaker labels (me/them)

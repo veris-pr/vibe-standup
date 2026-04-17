@@ -156,8 +156,8 @@ import Testing
     let liveB = try registry.resolveLivePlugin(id: "noise-gate")
     #expect(liveA !== liveB)
 
-    let stageA = try registry.resolveStagePlugin(id: "whisper")
-    let stageB = try registry.resolveStagePlugin(id: "whisper")
+    let stageA = try registry.resolveStagePlugin(id: "mlx-whisper")
+    let stageB = try registry.resolveStagePlugin(id: "mlx-whisper")
     #expect(stageA !== stageB)
 }
 
@@ -223,13 +223,13 @@ import Testing
     #expect(plugin.id == "wiener-noise")
 }
 
-// MARK: - Whisper Plugin Tests
+// MARK: - mlx-whisper Plugin Tests
 
-@Test func whisperPluginRegistered() async throws {
+@Test func mlxWhisperPluginRegistered() async throws {
     let registry = PluginRegistry()
     StagePluginRegistration.registerAll(in: registry)
-    let plugin = try registry.resolveStagePlugin(id: "whisper")
-    #expect(plugin.id == "whisper")
+    let plugin = try registry.resolveStagePlugin(id: "mlx-whisper")
+    #expect(plugin.id == "mlx-whisper")
 }
 
 // MARK: - Comic Formatter Tests
@@ -267,7 +267,7 @@ import Testing
     #expect(liveIds.contains("normalize"))         // factory
 
     let stageIds = registry.allStagePluginIds
-    #expect(stageIds.contains("whisper"))
+    #expect(stageIds.contains("mlx-whisper"))
     #expect(stageIds.contains("channel-diarizer"))
     #expect(stageIds.contains("energy-diarizer"))
     #expect(stageIds.contains("transcript-merger"))
@@ -413,7 +413,7 @@ private struct AnyDecodable: Decodable {
     #expect(abs(segment.endTime - 0.5) < 0.0001)
 }
 
-/// Full standup-comics pipeline: synthetic audio → whisper → diarize → merge → format → render
+/// Full standup-comics pipeline: synthetic audio → mlx-whisper → diarize → merge → format → render
 @Test func standupComicsEndToEnd() async throws {
     let sessionId = "e2e-\(UUID().uuidString.prefix(6))"
     let sessionDir = NSTemporaryDirectory() + "standup-e2e-\(sessionId)"
@@ -479,7 +479,7 @@ private struct AnyDecodable: Decodable {
 
     stages:
       - id: transcribe
-        plugin: whisper
+        plugin: mlx-whisper
         input: audio_chunks
 
       - id: diarize
@@ -529,7 +529,7 @@ private struct AnyDecodable: Decodable {
     try await pipelineService.executeStages(definition: definition, session: session)
 
     // --- Verify Stage 1: Transcription ---
-    // Output dir is now scoped by stage.id ("transcribe"), not plugin.id ("whisper")
+    // Output dir is now scoped by stage.id ("transcribe"), not plugin.id
     let transcribeDir = (sessionDir as NSString).appendingPathComponent("transcribe")
     let segmentsPath = (transcribeDir as NSString).appendingPathComponent("segments.json")
     #expect(fm.fileExists(atPath: segmentsPath), "Whisper segments.json should exist")
