@@ -45,7 +45,7 @@ Tests/
 └── StandupTests/             # 23 tests (unit + integration + E2E)
 pipelines/                    # YAML pipeline definitions
 ├── standup-comics.yaml       # 5-stage: whisper → diarize → merge → format → render
-└── meeting-todos.yaml        # Transcription + action extraction (partially stubbed)
+└── meeting-todos.yaml        # Planned pipeline, not installed until its plugins ship
 ```
 
 ## Key File: PluginContracts.swift
@@ -96,7 +96,7 @@ Stage factories: `diarizer` (strategies: channel, energy)
 1. Create `Sources/LivePlugins/MyCategory/MyPlugin.swift`
 2. Subclass `BaseLivePlugin`
 3. Override `process(buffer:frameCount:channel:)` — modify buffer in-place, return `.modified`
-4. Register in `Sources/LivePlugins/Registration.swift`: `registry.register(live: MyPlugin())`
+4. Register in `Sources/LivePlugins/Registration.swift`: `registry.register(live: "my-plugin") { MyPlugin() }`
 5. If multi-strategy, create a factory implementing `LivePluginFactory`
 
 ```swift

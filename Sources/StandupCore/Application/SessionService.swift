@@ -3,6 +3,7 @@
 /// This is the use-case layer — coordinates domain objects and infrastructure.
 
 import Foundation
+import os
 
 public final class SessionService: @unchecked Sendable {
     // SAFETY: @unchecked Sendable — called from CLI main thread sequentially.
@@ -12,6 +13,7 @@ public final class SessionService: @unchecked Sendable {
     private var activeSession: Session?
     private var captureEngine: AudioCapturePort?
     private var activeLiveChains: (mic: LivePluginChain, system: LivePluginChain)?
+    private let captureFailure = OSAllocatedUnfairLock(initialState: Optional<SessionCaptureError>.none)
 
     public init(config: StandupConfig, repository: SessionRepository) {
         self.config = config
@@ -29,6 +31,8 @@ public final class SessionService: @unchecked Sendable {
         guard activeSession == nil else {
             throw SessionError.alreadyActive
         }
+
+        captureFailure.withLock { $0 = nil }
 
         let id = UUID().uuidString.prefix(8).lowercased()
         let sessionDir = (config.sessionsDirectory as NSString).appendingPathComponent(String(id))
@@ -77,11 +81,15 @@ public final class SessionService: @unchecked Sendable {
 
         // Release live plugin chains (triggers ARC cleanup)
         activeLiveChains = nil
+        activeSession = nil
+
+        if let captureFailure = takeCaptureFailure() {
+            throw captureFailure
+        }
 
         try session.markProcessing()
         try repository.update(session)
 
-        activeSession = nil
         return session
     }
 
@@ -110,6 +118,14 @@ public final class SessionService: @unchecked Sendable {
     }
 
     public var currentSession: Session? { activeSession }
+
+    private func takeCaptureFailure() -> SessionCaptureError? {
+        captureFailure.withLock { failure in
+            let captured = failure
+            failure = nil
+            return captured
+        }
+    }
 }
 
 // MARK: - AudioCaptureDelegate
@@ -120,6 +136,26 @@ extension SessionService: AudioCaptureDelegate {
     }
 
     public func didEncounterError(_ error: Error) {
-        print("⚠ Audio capture error: \(error.localizedDescription)")
+        let shouldReport = captureFailure.withLock { failure in
+            if failure == nil {
+                failure = .chunkWriteFailed(error.localizedDescription)
+                return true
+            }
+            return false
+        }
+        if shouldReport {
+            print("⚠ Audio capture error: \(error.localizedDescription)")
+        }
+    }
+}
+
+public enum SessionCaptureError: Error, LocalizedError, Sendable {
+    case chunkWriteFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .chunkWriteFailed(let message):
+            "Audio capture failed while writing chunks: \(message)"
+        }
     }
 }

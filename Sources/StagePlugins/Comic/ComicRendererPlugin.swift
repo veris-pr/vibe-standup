@@ -9,7 +9,7 @@ import StandupCore
 
 public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
     // SAFETY: Inherits Sendable contract from BaseStagePlugin.
-    override public var inputArtifacts: [ArtifactType] { [.comicScript] }
+    override public var inputArtifacts: [ArtifactType] { [.comicScript, .panelImages] }
     override public var outputArtifacts: [ArtifactType] { [.comicOutput] }
 
     private var title: String = "Standup Comic"

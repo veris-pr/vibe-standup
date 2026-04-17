@@ -8,14 +8,14 @@ public enum StagePluginRegistration {
         // Factories (multi-strategy)
         registry.register(stageFactory: DiarizationFactory.self)
 
-        // Direct registrations
-        registry.register(stage: ChannelDiarizerPlugin())
-        registry.register(stage: EnergyDiarizerPlugin())
-        registry.register(stage: TranscriptMergerPlugin())
-        registry.register(stage: WhisperPlugin())
-        registry.register(stage: ComicFormatterPlugin())
-        registry.register(stage: ComicScriptPlugin())
-        registry.register(stage: ImageGenPlugin())
-        registry.register(stage: ComicRendererPlugin())
+        // Direct registrations use factories so each stage execution gets a fresh instance.
+        registry.register(stage: "channel-diarizer") { ChannelDiarizerPlugin() }
+        registry.register(stage: "energy-diarizer") { EnergyDiarizerPlugin() }
+        registry.register(stage: "transcript-merger") { TranscriptMergerPlugin() }
+        registry.register(stage: "whisper") { WhisperPlugin() }
+        registry.register(stage: "comic-formatter") { ComicFormatterPlugin() }
+        registry.register(stage: "comic-script") { ComicScriptPlugin() }
+        registry.register(stage: "image-gen") { ImageGenPlugin() }
+        registry.register(stage: "comic-renderer") { ComicRendererPlugin() }
     }
 }

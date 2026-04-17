@@ -147,6 +147,20 @@ import Testing
     }
 }
 
+@Test func directPluginRegistrationsReturnFreshInstances() async throws {
+    let registry = PluginRegistry()
+    LivePluginRegistration.registerAll(in: registry)
+    StagePluginRegistration.registerAll(in: registry)
+
+    let liveA = try registry.resolveLivePlugin(id: "noise-gate")
+    let liveB = try registry.resolveLivePlugin(id: "noise-gate")
+    #expect(liveA !== liveB)
+
+    let stageA = try registry.resolveStagePlugin(id: "whisper")
+    let stageB = try registry.resolveStagePlugin(id: "whisper")
+    #expect(stageA !== stageB)
+}
+
 // MARK: - Session Value Object Tests
 
 @Test func sessionValueObject() async throws {
@@ -363,6 +377,41 @@ private struct AnyDecodable: Decodable {
 }
 
 // MARK: - End-to-End Pipeline Integration Test
+
+@Test func channelDiarizerUsesSystemChunkDuration() async throws {
+    let sessionId = "diarizer-\(UUID().uuidString.prefix(6))"
+    let sessionDir = NSTemporaryDirectory() + "standup-diarizer-\(sessionId)"
+    let chunksDir = (sessionDir as NSString).appendingPathComponent("chunks")
+    let fm = FileManager.default
+    try fm.createDirectory(atPath: chunksDir, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(atPath: sessionDir) }
+
+    let frameCount = 24_000
+    let samples = [Float](repeating: 0.2, count: frameCount)
+    let sysPath = (chunksDir as NSString).appendingPathComponent("000001_system.pcm")
+    try samples.withUnsafeBufferPointer { ptr in
+        try Data(buffer: ptr).write(to: URL(fileURLWithPath: sysPath))
+    }
+
+    let plugin = ChannelDiarizerPlugin()
+    try await plugin.setup(config: PluginConfig())
+    let outputs = try await plugin.execute(context: StageContext(
+        sessionId: sessionId,
+        sessionDirectory: sessionDir,
+        stageId: "diarize",
+        inputArtifacts: [
+            "audio_chunks": Artifact(stageId: "capture", type: .audioChunks, path: chunksDir)
+        ],
+        config: PluginConfig()
+    ))
+
+    let outputPath = try #require(outputs.first?.path)
+    let data = try Data(contentsOf: URL(fileURLWithPath: outputPath))
+    let segments = try JSONDecoder().decode([TestSpeakerLabel].self, from: data)
+    let segment = try #require(segments.first)
+    #expect(segment.startTime == 0)
+    #expect(abs(segment.endTime - 0.5) < 0.0001)
+}
 
 /// Full standup-comics pipeline: synthetic audio → whisper → diarize → merge → format → render
 @Test func standupComicsEndToEnd() async throws {
@@ -604,4 +653,3 @@ private struct TestComicScriptPanel: Codable {
     let imagePrompt: String
     let mood: String
 }
-

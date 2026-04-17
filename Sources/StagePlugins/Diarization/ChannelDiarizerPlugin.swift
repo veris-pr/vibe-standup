@@ -52,8 +52,8 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
             let sysActive = sysRMS > thresholdLinear
 
             let chunkDuration: Double
-            if let micPath = pair.mic {
-                let fileSize = (try? fm.attributesOfItem(atPath: micPath)[.size] as? Int) ?? 0
+            if let samplePath = pair.mic ?? pair.system {
+                let fileSize = (try? fm.attributesOfItem(atPath: samplePath)[.size] as? Int) ?? 0
                 chunkDuration = Double(fileSize) / Double(MemoryLayout<Float>.size) / AudioFormat.standard.sampleRate
             } else {
                 chunkDuration = 1.0

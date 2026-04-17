@@ -267,10 +267,23 @@ struct InitCommand: AsyncParsableCommand {
             return
         }
 
+        let registry = buildRegistry()
+        let availableStagePlugins = Set(registry.allStagePluginIds)
         let yamlFiles = (try? fm.contentsOfDirectory(atPath: source).filter { $0.hasSuffix(".yaml") }) ?? []
         for file in yamlFiles {
             let srcPath = (source as NSString).appendingPathComponent(file)
             let dstPath = (config.pipelinesDirectory as NSString).appendingPathComponent(file)
+
+            if let definition = try? PipelineService.load(from: srcPath) {
+                let missingPlugins = Set(definition.stages.map(\.pluginId))
+                    .subtracting(availableStagePlugins)
+                    .sorted()
+                if !missingPlugins.isEmpty {
+                    printWarn("Skipping pipeline \(file) — missing stage plugins: \(missingPlugins.joined(separator: ", "))")
+                    continue
+                }
+            }
+
             if fm.fileExists(atPath: dstPath) {
                 printOK("Pipeline exists: \(file)")
             } else if dryRun {
@@ -455,7 +468,7 @@ struct StartCommand: AsyncParsableCommand {
             return
         }
 
-        let (config, _, sessionService, pipelineService) = try buildServices()
+        let (config, registry, sessionService, pipelineService) = try buildServices()
 
         // Verify init has been run
         let configPath = (config.baseDirectory as NSString).appendingPathComponent("config.yaml")
@@ -478,6 +491,17 @@ struct StartCommand: AsyncParsableCommand {
             let fm = FileManager.default
             if let files = try? fm.contentsOfDirectory(atPath: config.pipelinesDirectory).filter({ $0.hasSuffix(".yaml") }) {
                 for f in files.sorted() { print("    - \(f.replacingOccurrences(of: ".yaml", with: ""))") }
+            }
+            Foundation.exit(1)
+        }
+
+        let missingStagePlugins = Set(definition.stages.map(\.pluginId))
+            .subtracting(Set(registry.allStagePluginIds))
+            .sorted()
+        if !missingStagePlugins.isEmpty {
+            print("✗ Pipeline '\(definition.name)' references unavailable stage plugins:")
+            for pluginId in missingStagePlugins {
+                print("  - \(pluginId)")
             }
             Foundation.exit(1)
         }
@@ -541,7 +565,7 @@ struct StartCommand: AsyncParsableCommand {
             sigSource.setEventHandler {
                 sigSource.cancel()
                 Task {
-                    var sessionId: String?
+                    var sessionId: String? = session.id
                     do {
                         let stopped = try await sessionService.stopSession()
                         sessionId = stopped.id
@@ -563,7 +587,7 @@ struct StartCommand: AsyncParsableCommand {
                             try sessionService.markComplete(sessionId: stopped.id)
 
                             // Surface warnings from pipeline output
-                            let pipelineWarnings = Self.collectPipelineWarnings(sessionPath: stopped.directoryPath)
+                            let pipelineWarnings = Self.collectPipelineWarnings(sessionPath: stopped.directoryPath, definition: definition)
                             if pipelineWarnings.isEmpty {
                                 print("✓ Pipeline complete!")
                             } else {
@@ -593,7 +617,7 @@ struct StartCommand: AsyncParsableCommand {
                             print("✓ Session complete. Audio in: \(stopped.chunksPath)")
                         }
                     } catch {
-                        print("\n✗ Error during pipeline: \(error.localizedDescription)")
+                        print("\n✗ Error while stopping session or running pipeline: \(error.localizedDescription)")
                         if let id = sessionId {
                             try? sessionService.markFailed(sessionId: id)
                         }
@@ -643,32 +667,42 @@ struct StartCommand: AsyncParsableCommand {
     }
 
     /// Check pipeline outputs for degraded results (empty transcripts, fallback images, etc.)
-    private static func collectPipelineWarnings(sessionPath: String) -> [String] {
+    private static func collectPipelineWarnings(sessionPath: String, definition: PipelineDefinition) -> [String] {
         var warnings: [String] = []
         let fm = FileManager.default
 
-        // Check image-gen manifest for panel generation warnings
-        let manifestPath = ((sessionPath as NSString)
-            .appendingPathComponent("image-gen") as NSString)
-            .appendingPathComponent("manifest.json")
-        if let data = fm.contents(atPath: manifestPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let manifestWarnings = json["warnings"] as? [String], !manifestWarnings.isEmpty {
-            for w in manifestWarnings {
-                warnings.append(w)
+        let whisperStageIds = definition.stages.filter { $0.pluginId == "whisper" }.map(\.id)
+        for stageId in whisperStageIds {
+            let segmentsPath = ((sessionPath as NSString).appendingPathComponent(stageId) as NSString)
+                .appendingPathComponent("segments.json")
+            guard let data = fm.contents(atPath: segmentsPath),
+                  let segments = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                continue
+            }
+
+            if segments.isEmpty {
+                warnings.append("Transcription produced 0 segments — audio may be silent or whisper unavailable")
+                continue
+            }
+
+            let hasPlaceholder = segments.contains {
+                (($0["text"] as? String) ?? "").contains("requires whisper-cpp")
+            }
+            if hasPlaceholder {
+                warnings.append("Transcription used placeholder output — install whisper-cpp and a model for real transcripts")
             }
         }
 
-        // Check if transcript is empty or placeholder-only
-        let transcriptDir = (sessionPath as NSString).appendingPathComponent("transcribe")
-        if let files = try? fm.contentsOfDirectory(atPath: transcriptDir),
-           let jsonFile = files.first(where: { $0.hasSuffix(".json") }),
-           let data = fm.contents(atPath: (transcriptDir as NSString).appendingPathComponent(jsonFile)),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let segments = json["segments"] as? [[String: Any]] {
-            if segments.isEmpty {
-                warnings.append("Transcription produced 0 segments — audio may be silent or whisper unavailable")
+        let imageStageIds = definition.stages.filter { $0.pluginId == "image-gen" }.map(\.id)
+        for stageId in imageStageIds {
+            let manifestPath = ((sessionPath as NSString).appendingPathComponent(stageId) as NSString)
+                .appendingPathComponent("manifest.json")
+            guard let data = fm.contents(atPath: manifestPath),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let manifestWarnings = json["warnings"] as? [String] else {
+                continue
             }
+            warnings.append(contentsOf: manifestWarnings)
         }
 
         return warnings
@@ -695,10 +729,10 @@ struct StopCommand: AsyncParsableCommand {
             print("■ Sending stop signal to session \(sessionId) (pid \(pid))")
             kill(pid, SIGINT)
         } else {
-            // Fallback: just clean up the sentinel file
-            print("■ Cleaning up session \(sessionId) (capture process not found)")
-            try FileManager.default.removeItem(atPath: config.activeSessionFile)
-            try? FileManager.default.removeItem(atPath: pidFile)
+            print("✗ Cannot stop session \(sessionId): capture PID file is missing")
+            print("  The session may still be recording. Stop the process manually, then remove:")
+            print("  \(config.activeSessionFile)")
+            Foundation.exit(1)
         }
     }
 }

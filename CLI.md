@@ -42,7 +42,6 @@ Start an audio capture session.
 ```bash
 standup start                              # Capture only (no pipeline)
 standup start --pipeline standup-comics    # Capture + run pipeline on stop
-standup start --pipeline meeting-todos     # Different pipeline
 ```
 
 **Options:**
@@ -84,7 +83,7 @@ standup list
 SESSION    PIPELINE             STATUS       STARTED
 ────────────────────────────────────────────────────────────
 abc123     standup-comics       complete     2024-03-15 10:30
-def456     meeting-todos        complete     2024-03-15 14:00
+def456     default              active       2024-03-15 14:00
 ```
 
 **Status values:**
@@ -159,8 +158,7 @@ $ standup start --pipeline comics
 ├── models/
 │   └── ggml-base.en.bin # Whisper GGML model
 ├── pipelines/
-│   ├── standup-comics.yaml
-│   └── meeting-todos.yaml
+│   └── standup-comics.yaml
 ├── plugins/             # External plugin search path
 └── sessions/
     └── <session-id>/

@@ -23,6 +23,18 @@ public final class PluginRegistry: @unchecked Sendable {
         stagePlugins[plugin.id] = plugin
     }
 
+    /// Register a factory for a single concrete live plugin type.
+    /// Prefer this over direct instance registration for plugins with mutable state.
+    public func register(live id: String, factory: @escaping @Sendable () -> LivePlugin) {
+        liveFactories[id] = { _ in factory() }
+    }
+
+    /// Register a factory for a single concrete stage plugin type.
+    /// Prefer this over direct instance registration so each stage gets a fresh instance.
+    public func register(stage id: String, factory: @escaping @Sendable () -> StagePlugin) {
+        stageFactories[id] = { _ in factory() }
+    }
+
     // MARK: Factory registration
 
     /// Register a factory that can create live plugins by strategy.
