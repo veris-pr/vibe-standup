@@ -354,13 +354,13 @@ struct InitCommand: AsyncParsableCommand {
 
     private func installMflux(dryRun: Bool, checks: inout CheckResults) async throws {
         if let found = findMflux() {
-            printOK("mflux-generate found: \(found)")
+            printOK("mflux found: \(found)")
             return
         }
 
         let venvDir = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
             .appendingPathComponent(".standup/venv")
-        let venvBin = (venvDir as NSString).appendingPathComponent("bin/mflux-generate")
+        let venvBin = (venvDir as NSString).appendingPathComponent("bin/mflux-generate-flux2")
 
         if dryRun {
             printDry("python3 -m venv \(venvDir) && \(venvDir)/bin/pip install mflux")
@@ -406,13 +406,22 @@ struct InitCommand: AsyncParsableCommand {
 
     private func findMflux() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "/opt/homebrew/bin/mflux-generate",
-            "/usr/local/bin/mflux-generate",
-            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
-            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        let binaries = ["mflux-generate-flux2", "mflux-generate"]
+        let searchDirs = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            (home as NSString).appendingPathComponent(".local/bin"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin"),
         ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+        for binary in binaries {
+            for dir in searchDirs {
+                let path = (dir as NSString).appendingPathComponent(binary)
+                if FileManager.default.fileExists(atPath: path) {
+                    return path
+                }
+            }
+        }
+        return nil
     }
 
     private func shellOutput(_ path: String, args: [String]) throws -> String {
@@ -1029,7 +1038,7 @@ struct CleanupCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Remove sessions older than: day, week, month")
     var olderThan: AgePeriod = .week
 
-    @Option(name: .long, help: "Filter by status: complete, incomplete, failed, all")
+    @Option(name: .long, help: "Filter by status: active, processing, complete, failed, all")
     var status: StatusFilter = .all
 
     @Option(name: .long, help: "What to clean: inputs (audio chunks), outputs (pipeline results), all (entire session)")
@@ -1050,11 +1059,12 @@ struct CleanupCommand: AsyncParsableCommand {
     }
 
     enum StatusFilter: String, ExpressibleByArgument, CaseIterable {
-        case complete, incomplete, failed, all
+        case active, processing, complete, failed, all
         func matches(_ status: SessionStatus) -> Bool {
             switch self {
+            case .active: return status == .active
+            case .processing: return status == .processing
             case .complete: return status == .complete
-            case .incomplete: return status == .active || status == .processing
             case .failed: return status == .failed
             case .all: return true
             }
@@ -1285,11 +1295,11 @@ struct DoctorCommand: AsyncParsableCommand {
                 printOK("Ollama service is running")
 
                 let (_, listOut) = try runProcess(ollamaPath, args: ["list"])
-                if listOut.contains("gemma3:4b") {
-                    printOK("Model: gemma3:4b")
+                if listOut.contains("gemma4") {
+                    printOK("Model: gemma4")
                 } else {
-                    printFail("Model gemma3:4b not pulled")
-                    issues.append("Run `ollama pull gemma3:4b`")
+                    printFail("Model gemma4 not pulled")
+                    issues.append("Run `ollama pull gemma4`")
                 }
             } else {
                 printFail("Ollama service not running")
@@ -1303,9 +1313,9 @@ struct DoctorCommand: AsyncParsableCommand {
         // mflux
         printStep("Image generation (mflux)")
         if let mfluxPath = findMflux() {
-            printOK("mflux-generate: \(mfluxPath)")
+            printOK("mflux: \(mfluxPath)")
         } else {
-            printFail("mflux-generate not found")
+            printFail("mflux-generate-flux2 not found")
             issues.append("mflux not installed — run `standup init`")
         }
 
@@ -1349,13 +1359,22 @@ struct DoctorCommand: AsyncParsableCommand {
 
     private func findMflux() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "/opt/homebrew/bin/mflux-generate",
-            "/usr/local/bin/mflux-generate",
-            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
-            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        let binaries = ["mflux-generate-flux2", "mflux-generate"]
+        let searchDirs = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            (home as NSString).appendingPathComponent(".local/bin"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin"),
         ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+        for binary in binaries {
+            for dir in searchDirs {
+                let path = (dir as NSString).appendingPathComponent(binary)
+                if FileManager.default.fileExists(atPath: path) {
+                    return path
+                }
+            }
+        }
+        return nil
     }
 
     private func runProcess(_ path: String, args: [String]) throws -> (Int32, String) {
