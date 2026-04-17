@@ -68,7 +68,7 @@ public final class ComicFormatterPlugin: BaseStagePlugin, @unchecked Sendable {
         let outputPath = (outputDir as NSString).appendingPathComponent("panels.json")
         try JSONEncoder.prettyEncoding.encode(panels).write(to: URL(fileURLWithPath: outputPath))
 
-        return [Artifact(stageId: id, type: .comicPanels, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .comicPanels, path: outputPath)]
     }
 
     // MARK: - Importance Scoring

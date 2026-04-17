@@ -82,7 +82,7 @@ public final class ChannelDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
         let data = try JSONEncoder.prettyEncoding.encode(merged)
         try data.write(to: URL(fileURLWithPath: outputPath))
 
-        return [Artifact(stageId: id, type: .diarizationLabels, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .diarizationLabels, path: outputPath)]
     }
 
     private func computeRMS(filePath: String) -> Float? {
@@ -130,7 +130,7 @@ public final class EnergyDiarizerPlugin: BaseStagePlugin, @unchecked Sendable {
         let empty: [DiarizationSegment] = []
         let data = try JSONEncoder.prettyEncoding.encode(empty)
         try data.write(to: URL(fileURLWithPath: outputPath))
-        return [Artifact(stageId: id, type: .diarizationLabels, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .diarizationLabels, path: outputPath)]
     }
 }
 

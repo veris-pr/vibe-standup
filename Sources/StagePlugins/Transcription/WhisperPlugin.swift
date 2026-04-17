@@ -73,7 +73,7 @@ public final class WhisperPlugin: BaseStagePlugin, @unchecked Sendable {
 
         try? FileManager.default.removeItem(atPath: mergedWAV)
 
-        return [Artifact(stageId: id, type: .transcriptionSegments, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .transcriptionSegments, path: outputPath)]
     }
 
     // MARK: - Merge PCM chunks → WAV

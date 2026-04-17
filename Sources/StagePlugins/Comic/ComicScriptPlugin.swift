@@ -50,7 +50,7 @@ public final class ComicScriptPlugin: BaseStagePlugin, @unchecked Sendable {
         let outputPath = (outputDir as NSString).appendingPathComponent("script.json")
         try JSONEncoder.prettyEncoding.encode(script).write(to: URL(fileURLWithPath: outputPath))
 
-        return [Artifact(stageId: id, type: .comicScript, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .comicScript, path: outputPath)]
     }
 
     // MARK: - LLM Generation

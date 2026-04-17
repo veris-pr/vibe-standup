@@ -103,7 +103,11 @@ struct InitCommand: AsyncParsableCommand {
         printStep("Checking virtual audio devices")
         checkVirtualDevices(&checks)
 
-        // 9. Validate plugin registry
+        // 9. Optional dependencies for standup-comics pipeline
+        printStep("Checking optional dependencies (standup-comics)")
+        checkOptionalDependencies(&checks)
+
+        // 10. Validate plugin registry
         printStep("Validating plugin registry")
         let registry = buildRegistry()
         printOK("Live plugins: \(registry.allLivePluginIds.joined(separator: ", "))")
@@ -308,6 +312,36 @@ struct InitCommand: AsyncParsableCommand {
         } else {
             for d in devices { printOK("Found: \(d)") }
             print("  → Use: standup start --capture virtual-device --virtual-device \"\(devices[0])\"")
+        }
+    }
+
+    private func checkOptionalDependencies(_ checks: inout CheckResults) {
+        // Ollama (needed for comic-script LLM generation)
+        if let ollamaPath = findExecutable("ollama") {
+            printOK("Ollama found: \(ollamaPath)")
+            print("  → Ensure a model is pulled: ollama pull gemma3:4b")
+        } else {
+            printWarn("Ollama not found — comic-script stage will use heuristic fallback")
+            print("  → Install: brew install ollama && ollama pull gemma3:4b")
+            checks.warnings.append("Ollama not installed — comic script uses heuristic fallback")
+        }
+
+        // mflux-generate (needed for AI panel images)
+        let mfluxCandidates = [
+            "/opt/homebrew/bin/mflux-generate",
+            "/usr/local/bin/mflux-generate",
+        ]
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let allMflux = mfluxCandidates + [
+            (home as NSString).appendingPathComponent(".local/bin/mflux-generate"),
+            (home as NSString).appendingPathComponent(".standup/venv/bin/mflux-generate"),
+        ]
+        if let found = allMflux.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            printOK("mflux-generate found: \(found)")
+        } else {
+            printWarn("mflux-generate not found — panel images will use SVG placeholders")
+            print("  → Install: pip install mflux")
+            checks.warnings.append("mflux not installed — image generation uses SVG placeholders")
         }
     }
 

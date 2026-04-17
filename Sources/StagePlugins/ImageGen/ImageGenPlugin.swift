@@ -47,26 +47,39 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
 
         // Build character color map for SVG fallback
         let characterColors = Dictionary(uniqueKeysWithValues: script.characters.map { ($0.heroName, $0.color) })
+        let hasMflux = !mfluxPath.isEmpty && fm.fileExists(atPath: mfluxPath)
+
+        var manifest: [PanelImageEntry] = []
+        var warnings: [String] = []
 
         for panel in script.panels {
-            let imagePath = (outputDir as NSString).appendingPathComponent("panel_\(panel.index).png")
+            let color = characterColors[panel.heroName] ?? "#4A90D9"
 
-            if !mfluxPath.isEmpty && fm.fileExists(atPath: mfluxPath) {
-                try await generateWithMflux(prompt: panel.imagePrompt, outputPath: imagePath)
+            if hasMflux {
+                let pngPath = (outputDir as NSString).appendingPathComponent("panel_\(panel.index).png")
+                do {
+                    try await generateWithMflux(prompt: panel.imagePrompt, outputPath: pngPath)
+                    manifest.append(PanelImageEntry(index: panel.index, path: "panel_\(panel.index).png", format: "png"))
+                } catch {
+                    // Per-panel fallback — don't abort the whole stage
+                    warnings.append("Panel \(panel.index): mflux failed (\(error.localizedDescription)), using SVG placeholder")
+                    let svgPath = (outputDir as NSString).appendingPathComponent("panel_\(panel.index).svg")
+                    try generateSVGPlaceholder(panel: panel, color: color, outputPath: svgPath)
+                    manifest.append(PanelImageEntry(index: panel.index, path: "panel_\(panel.index).svg", format: "svg"))
+                }
             } else {
-                let color = characterColors[panel.heroName] ?? "#4A90D9"
-                try generateSVGPlaceholder(panel: panel, color: color, outputPath: imagePath)
+                let svgPath = (outputDir as NSString).appendingPathComponent("panel_\(panel.index).svg")
+                try generateSVGPlaceholder(panel: panel, color: color, outputPath: svgPath)
+                manifest.append(PanelImageEntry(index: panel.index, path: "panel_\(panel.index).svg", format: "svg"))
             }
         }
 
-        // Write manifest so the renderer knows which images were generated
-        let manifest = script.panels.map { panel in
-            PanelImageEntry(index: panel.index, path: "panel_\(panel.index).png")
-        }
+        // Write manifest so the renderer knows which images were generated and their format
+        let manifestData = ImageManifest(panels: manifest, warnings: warnings)
         let manifestPath = (outputDir as NSString).appendingPathComponent("manifest.json")
-        try JSONEncoder.prettyEncoding.encode(manifest).write(to: URL(fileURLWithPath: manifestPath))
+        try JSONEncoder.prettyEncoding.encode(manifestData).write(to: URL(fileURLWithPath: manifestPath))
 
-        return [Artifact(stageId: id, type: .panelImages, path: manifestPath)]
+        return [Artifact(stageId: context.stageId, type: .panelImages, path: manifestPath)]
     }
 
     // MARK: - mflux Generation
@@ -110,14 +123,7 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
     // MARK: - SVG Placeholder Fallback
 
     private func generateSVGPlaceholder(panel: ComicScriptPanel, color: String, outputPath: String) throws {
-        // Generate a simple SVG comic panel as placeholder
         let svg = renderPlaceholderSVG(panel: panel, color: color)
-
-        // Write as SVG (rename to .svg for clarity, but keep .png path for manifest consistency)
-        let svgPath = outputPath.replacingOccurrences(of: ".png", with: ".svg")
-        try svg.write(toFile: svgPath, atomically: true, encoding: .utf8)
-
-        // Also write the SVG at the png path so manifest works uniformly
         try svg.write(toFile: outputPath, atomically: true, encoding: .utf8)
     }
 
@@ -208,6 +214,12 @@ public final class ImageGenPlugin: BaseStagePlugin, @unchecked Sendable {
 struct PanelImageEntry: Codable {
     let index: Int
     let path: String
+    let format: String  // "png" or "svg"
+}
+
+struct ImageManifest: Codable {
+    let panels: [PanelImageEntry]
+    let warnings: [String]
 }
 
 enum ImageGenError: Error, LocalizedError, Sendable {

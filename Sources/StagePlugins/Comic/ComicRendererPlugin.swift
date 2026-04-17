@@ -32,36 +32,44 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
         let scriptData = try Data(contentsOf: URL(fileURLWithPath: scriptRef.path))
         let script = try JSONDecoder().decode(ComicScript.self, from: scriptData)
 
-        // Load panel images if available
+        // Load panel manifest if available
+        let panelManifest: RendererManifest?
         let imageDir: String?
         if let imagesRef = context.inputArtifacts.values.first(where: { $0.type == .panelImages })
             ?? context.inputArtifacts["panel-render"] {
-            // imagesRef.path points to manifest.json — images are in the same directory
+            let manifestData = try Data(contentsOf: URL(fileURLWithPath: imagesRef.path))
+            panelManifest = try JSONDecoder().decode(RendererManifest.self, from: manifestData)
             imageDir = (imagesRef.path as NSString).deletingLastPathComponent
         } else {
+            panelManifest = nil
             imageDir = nil
         }
 
-        let html = renderHTML(script: script, imageDir: imageDir)
+        let html = renderHTML(script: script, imageDir: imageDir, manifest: panelManifest)
 
         let outputDir = try ensureOutputDirectory(context: context)
         let outputPath = (outputDir as NSString).appendingPathComponent("comic.html")
-        try html.write(toFile: outputPath, atomically: true, encoding: .utf8)
+        try html.write(toFile: outputPath, atomically: true, encoding: String.Encoding.utf8)
 
-        return [Artifact(stageId: id, type: .comicOutput, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .comicOutput, path: outputPath)]
     }
 
     // MARK: - HTML Rendering
 
-    private func renderHTML(script: ComicScript, imageDir: String?) -> String {
+    private func renderHTML(script: ComicScript, imageDir: String?, manifest: RendererManifest?) -> String {
         let characterColors = Dictionary(uniqueKeysWithValues: script.characters.map {
             ($0.heroName, $0.color)
         })
+        let panelLookup: [Int: RendererPanelEntry] = {
+            guard let m = manifest else { return [:] }
+            return Dictionary(uniqueKeysWithValues: m.panels.map { ($0.index, $0) })
+        }()
 
         let panelHTML = script.panels.map { panel -> String in
             let color = characterColors[panel.heroName] ?? "#4A90D9"
             let moodEmoji = panel.mood.emoji
-            let imageContent = loadPanelImage(index: panel.index, imageDir: imageDir, fallbackColor: color)
+            let entry = panelLookup[panel.index]
+            let imageContent = loadPanelImage(entry: entry, imageDir: imageDir, fallbackColor: color)
 
             return """
             <div class="panel">
@@ -246,29 +254,30 @@ public final class ComicRendererPlugin: BaseStagePlugin, @unchecked Sendable {
 
     // MARK: - Image Loading
 
-    private func loadPanelImage(index: Int, imageDir: String?, fallbackColor: String) -> String {
-        guard let dir = imageDir else {
+    private func loadPanelImage(entry: RendererPanelEntry?, imageDir: String?, fallbackColor: String) -> String {
+        guard let entry, let dir = imageDir else {
             return colorFallback(fallbackColor)
         }
 
-        let pngPath = (dir as NSString).appendingPathComponent("panel_\(index).png")
+        let filePath = (dir as NSString).appendingPathComponent(entry.path)
         let fm = FileManager.default
 
-        guard fm.fileExists(atPath: pngPath) else {
+        guard fm.fileExists(atPath: filePath) else {
             return colorFallback(fallbackColor)
         }
 
-        // Check if it's actually an SVG (placeholder fallback writes SVG to .png path)
-        if let data = fm.contents(atPath: pngPath),
-           let text = String(data: data, encoding: .utf8),
-           text.hasPrefix("<svg") {
-            return text
+        if entry.format == "svg" {
+            // Inline SVG directly
+            if let text = try? String(contentsOfFile: filePath, encoding: .utf8) {
+                return text
+            }
+            return colorFallback(fallbackColor)
         }
 
-        // Real PNG — embed as base64
-        if let data = fm.contents(atPath: pngPath) {
+        // PNG/other binary — embed as base64
+        if let data = fm.contents(atPath: filePath) {
             let base64 = data.base64EncodedString()
-            return "<img src=\"data:image/png;base64,\(base64)\" alt=\"Panel \(index)\">"
+            return "<img src=\"data:image/png;base64,\(base64)\" alt=\"Panel \(entry.index)\">"
         }
 
         return colorFallback(fallbackColor)
@@ -297,4 +306,16 @@ private enum RenderError: Error, LocalizedError, Sendable {
         case .missingInput(let what): "Comic renderer missing input: \(what)"
         }
     }
+}
+
+/// Mirrors ImageGen's manifest — kept private to avoid coupling.
+private struct RendererManifest: Codable {
+    let panels: [RendererPanelEntry]
+    let warnings: [String]
+}
+
+private struct RendererPanelEntry: Codable {
+    let index: Int
+    let path: String
+    let format: String
 }

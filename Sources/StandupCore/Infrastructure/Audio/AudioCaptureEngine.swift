@@ -118,7 +118,9 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
         self.streamDelegate = delegate
 
         let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        try stream.addStreamOutput(delegate, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
+        // Serial queue — SystemAudioStreamDelegate mutates scratchBuffer, so concurrent dispatch is unsafe.
+        let sckQueue = DispatchQueue(label: "standup.sck.audio", qos: .userInteractive)
+        try stream.addStreamOutput(delegate, type: .audio, sampleHandlerQueue: sckQueue)
         try await stream.startCapture()
         self.scStream = stream
     }
@@ -128,7 +130,7 @@ public final class AudioCaptureEngine: AudioCapturePort, @unchecked Sendable {
 
 private final class SystemAudioStreamDelegate: NSObject, SCStreamOutput, @unchecked Sendable {
     // SAFETY: @unchecked Sendable — handler closure captures only Sendable references.
-    // scratchBuffer is accessed only from the SCStreamOutput callback queue (serial).
+    // scratchBuffer is accessed only from sckQueue (serial DispatchQueue).
     let handler: (UnsafeMutablePointer<Float>, Int) -> Void
     private var scratchBuffer: UnsafeMutablePointer<Float>
     private var scratchCapacity: Int

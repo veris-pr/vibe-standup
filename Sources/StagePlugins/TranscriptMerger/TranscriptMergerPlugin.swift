@@ -57,7 +57,7 @@ public final class TranscriptMergerPlugin: BaseStagePlugin, @unchecked Sendable 
         let outputPath = (outputDir as NSString).appendingPathComponent("transcript.json")
         try JSONEncoder.prettyEncoding.encode(merged).write(to: URL(fileURLWithPath: outputPath))
 
-        return [Artifact(stageId: id, type: .cleanTranscript, path: outputPath)]
+        return [Artifact(stageId: context.stageId, type: .cleanTranscript, path: outputPath)]
     }
 }
 
